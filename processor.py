@@ -410,15 +410,18 @@ def build_rows(machines):
         first_ev = m['first_event'].date() if m['first_event'] else None
         last_ev  = m['last_event'].date()  if m['last_event']  else None
 
-        # Guard: skip rows that have no meaningful data beyond product/MAC.
-        # This catches machines whose events exist but produced no dates or
-        # versions (e.g. corrupt timestamps, missing version columns).
+        # Skip machines whose every event was Commercial, Education, or Evaluation.
+        # These must not appear in the final report at all.
+        if is_excluded:
+            continue
+
+        # Guard: skip rows with no meaningful data (corrupt timestamps / versions).
         has_data = (
             first_ev is not None
             or (isinstance(license_count, int) and license_count > 0)
             or (version_str not in ('-', 'N/A', '', None))
         )
-        if not has_data and not is_excluded:
+        if not has_data:
             continue
 
         rows.append({

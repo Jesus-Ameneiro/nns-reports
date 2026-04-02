@@ -105,10 +105,20 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
     ]
 
     n_rows = len(rows)
+    n_template_cols = max(col_map.values()) if col_map else 8
 
-    # Write data into the first n_rows pre-bordered slots
+    # Template footer constants (MCC Data sheet)
+    TEMPLATE_LAST_DATA_ROW = DATA_START_ROW + TEMPLATE_DATA_ROWS - 1  # row 31
+    NOTE_ROW_IN_TEMPLATE   = 36   # 'Nota:...' row in the blank template
+    IMAGE_ROW_IN_TEMPLATE  = 42   # footer image row in the blank template
+    NOTE_GAP  = NOTE_ROW_IN_TEMPLATE  - TEMPLATE_LAST_DATA_ROW   # 5
+    IMAGE_GAP = IMAGE_ROW_IN_TEMPLATE - TEMPLATE_LAST_DATA_ROW   # 11
+
+    # Write data rows; copy template styles to any row beyond pre-bordered range
     for idx, row in enumerate(rows):
         r = DATA_START_ROW + idx
+        if idx >= TEMPLATE_DATA_ROWS:
+            _copy_row_style(ws_data, DATA_START_ROW, r, n_template_cols)
         for header, field in mcc_col_order:
             col_idx = col_map.get(header)
             if col_idx is None:
@@ -126,10 +136,45 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
                     val = format_date(val)
             safe_set(ws_data, r, col_idx, val)
 
-    # Delete excess pre-bordered rows so footer shifts up naturally
     excess = TEMPLATE_DATA_ROWS - n_rows
     if excess > 0:
+        # Fewer machines than template rows: delete excess, footer shifts up naturally
         ws_data.delete_rows(DATA_START_ROW + n_rows, excess)
+    elif excess < 0:
+        # More machines than template rows: push footer below last data row
+        extra_rows = -excess
+        data_end   = DATA_START_ROW + n_rows - 1
+        note_row   = data_end + NOTE_GAP
+        image_row  = data_end + IMAGE_GAP  # 1-based Excel row
+
+        # Re-write footer note (template note at row 36 was overwritten by data)
+        note_text = ws_data.cell(NOTE_ROW_IN_TEMPLATE, 1).value
+        if not note_text or 'Nota:' not in str(note_text):
+            note_text = ('Nota: El presente documento contiene información confidencial '
+                         'y se proporciona exclusivamente dentro del marco de License Compliance.')
+        ws_data.cell(note_row, 1).value = note_text
+
+        # Shift footer merge rows
+        old_ranges = [
+            (mc.min_row, mc.min_col, mc.max_row, mc.max_col)
+            for mc in ws_data.merged_cells.ranges
+        ]
+        ws_data.merged_cells.ranges.clear()
+        for (min_row, min_col, max_row, max_col) in old_ranges:
+            if min_row >= NOTE_ROW_IN_TEMPLATE - NOTE_GAP:
+                min_row += extra_rows
+                max_row += extra_rows
+            ws_data.merge_cells(start_row=min_row, start_column=min_col,
+                                 end_row=max_row, end_column=max_col)
+
+        # Shift footer image anchor
+        target_img_row_0based = image_row - 1
+        for img in ws_data._images:
+            try:
+                if img.anchor._from.row >= IMAGE_ROW_IN_TEMPLATE - 1:
+                    img.anchor._from.row = target_img_row_0based
+            except Exception:
+                pass
 
     data_end_row = DATA_START_ROW + n_rows - 1
 
