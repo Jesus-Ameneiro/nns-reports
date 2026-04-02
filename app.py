@@ -600,8 +600,7 @@ if generate and all_valid:
             output_buffer.seek(0)
 
             # Build filename
-            safe_entity = entity_name.strip().replace(' ', '_').replace('.', '').replace(',', '')[:40]
-            output_filename = f"{safe_entity}_Evidence_Report.xlsx"
+            output_filename = f"{entity_name.strip()} - Evidence Report.xlsx"
 
             # Store results in session state
             st.session_state['result_buffer'] = output_buffer.getvalue()

@@ -107,12 +107,12 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
         ('Client Email Addresses', 'client_email'),
     ]
 
-    # Clear existing data rows
-    for r in range(DATA_START_ROW, ws_data.max_row + 1):
-        for c in range(1, ws_data.max_column + 1):
-            safe_set(ws_data, r, c, None)
+    # Template has 18 pre-bordered data rows (rows 14-31).
+    # Write data into them, then delete any excess bordered rows.
+    TEMPLATE_DATA_ROWS = 18   # rows 14..31 in the blank template
+    n_rows = len(rows)
 
-    # Write data rows
+    # Write data into the first n_rows bordered slots
     for idx, row in enumerate(rows):
         r = DATA_START_ROW + idx
         for header, field in mcc_col_order:
@@ -126,20 +126,35 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
                 val = format_date(val)
             safe_set(ws_data, r, col_idx, val)
 
-    data_end_row = DATA_START_ROW + len(rows) - 1
+    data_end_row = DATA_START_ROW + n_rows - 1
 
-    # Footer
-    footer_start = data_end_row + 5
+    # Delete excess pre-bordered rows (from bottom up to preserve row indices)
+    excess = TEMPLATE_DATA_ROWS - n_rows
+    if excess > 0:
+        first_excess = DATA_START_ROW + n_rows
+        last_excess  = DATA_START_ROW + TEMPLATE_DATA_ROWS - 1
+        ws_data.delete_rows(first_excess, excess)
+
+    # Footer: note row is always 4 rows after the last data row
+    # (gap rows: data_end+1, data_end+2, data_end+3 are blank, footer note at data_end+4)
+    footer_note_row   = data_end_row + 4
+    specialist_row    = footer_note_row + 3
+
+    # Clear any stale footer content left by the template in those areas
+    for r in range(data_end_row + 1, data_end_row + 15):
+        for c in range(1, ws_data.max_column + 1):
+            safe_set(ws_data, r, c, None)
+
     footer_content = [
-        (0, 'Nota: El presente documento contiene información confidencial y se proporciona exclusivamente dentro del marco de License Compliance.'),
-        (3, 'XXXXXXXX'),
-        (4, 'Especialista en Resolución'),
-        (5, '=B2468(XXX) xxxx - xxxx'),
-        (6, 'XXXXX@ruvixx.com'),
-        (8, '425 Page Mill Rd, Suite 200, Palo Alto, 94306'),
+        (footer_note_row,  'Nota: El presente documento contiene información confidencial y se proporciona exclusivamente dentro del marco de License Compliance.'),
+        (specialist_row,   'XXXXXXXX'),
+        (specialist_row+1, 'Especialista en Resolución'),
+        (specialist_row+2, '=B2468(XXX) xxxx - xxxx'),
+        (specialist_row+3, 'XXXXX@ruvixx.com'),
+        (specialist_row+5, '425 Page Mill Rd, Suite 200, Palo Alto, 94306'),
     ]
-    for offset, text in footer_content:
-        safe_set(ws_data, footer_start + offset, 1, text)
+    for r, text in footer_content:
+        safe_set(ws_data, r, 1, text)
 
     # Column deletion: Computer Domains and Client Email Addresses
     cols_to_delete = []
@@ -237,12 +252,11 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
         ('Client Email Addresses', 'client_email'),
     ]
 
-    # Clear existing data rows
-    for r in range(DATA_START_ROW, ws_data.max_row + 1):
-        for c in range(1, ws_data.max_column + 1):
-            safe_set(ws_data, r, c, None)
+    # CS template has 12 pre-bordered data rows (rows 12-23).
+    TEMPLATE_DATA_ROWS = 12
+    n_rows = len(rows)
 
-    # Write data rows
+    # Write data into the first n_rows bordered slots
     for idx, row in enumerate(rows):
         r = DATA_START_ROW + idx
         for header, field in cs_col_order:
@@ -256,11 +270,22 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
                 val = format_date(val)
             safe_set(ws_data, r, col_idx, val)
 
-    data_end_row = DATA_START_ROW + len(rows) - 1
+    data_end_row = DATA_START_ROW + n_rows - 1
 
-    # Footer
-    footer_start = data_end_row + 2
-    safe_set(ws_data, footer_start, 1,
+    # Delete excess pre-bordered rows (from bottom up)
+    excess = TEMPLATE_DATA_ROWS - n_rows
+    if excess > 0:
+        ws_data.delete_rows(DATA_START_ROW + n_rows, excess)
+
+    # Footer: 2 rows after last data row
+    footer_note_row = data_end_row + 2
+
+    # Clear any stale footer content
+    for r in range(data_end_row + 1, data_end_row + 10):
+        for c in range(1, ws_data.max_column + 1):
+            safe_set(ws_data, r, c, None)
+
+    safe_set(ws_data, footer_note_row, 1,
         'Note: This document contains confidential information and is provided '
         'exclusively within the framework of License Compliance.')
 

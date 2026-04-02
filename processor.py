@@ -199,11 +199,15 @@ def process_case_events(events_df):
             current_date = None
 
         raw_product = str(row.get('Product', '') or '').strip()
+
+        # Version column takes priority - it contains the definitive product year
         version_val = clean_version(row.get('Version', None))
 
+        # Strip year from Product string to get the base product name
         base_product = raw_product
         if len(raw_product) >= 4 and raw_product[-4:].isdigit():
             base_product = raw_product[:-4].strip()
+            # Only use Product year as fallback if Version column gave nothing
             if not version_val:
                 version_val = raw_product[-4:]
 
