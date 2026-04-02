@@ -87,38 +87,57 @@ html, body, [data-testid="stAppViewContainer"] {
     bottom: 0; left: 0; right: 0;
     background: var(--surface);
     border-top: 1px solid var(--border);
-    padding: 0.5rem 2rem;
+    padding: 0 2rem;
+    height: 2.5rem;
     display: flex;
     align-items: center;
     justify-content: space-between;
     z-index: 999;
-    gap: 1rem;
+    gap: 1.5rem;
+    line-height: 1;
 }
 .footer-logo {
     font-family: var(--sans);
-    font-size: 1.1rem;
+    font-size: 0.85rem;
     font-weight: 800;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.12em;
     color: var(--text);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.2rem 0.55rem;
+    display: flex;
+    align-items: center;
+    line-height: 1;
+    flex-shrink: 0;
+    height: 1.5rem;
+    box-sizing: border-box;
 }
 .footer-logo span { color: var(--accent); }
 .footer-disclaimer {
     font-family: var(--mono);
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     color: var(--text-muted);
     text-align: center;
-    line-height: 1.4;
+    line-height: 1;
     flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 .footer-version {
     font-family: var(--mono);
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     color: var(--text-muted);
     white-space: nowrap;
+    display: flex;
+    align-items: center;
+    line-height: 1;
+    flex-shrink: 0;
 }
 /* Offset main content so footer doesn't overlap it */
 [data-testid="stAppViewContainer"] > .main > .block-container {
-    padding-bottom: 5rem !important;
+    padding-bottom: 4rem !important;
 }
 
 /* Typography */
