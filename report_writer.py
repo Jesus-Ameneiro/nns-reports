@@ -191,6 +191,51 @@ def _fix_merged_cells_after_row_deletion(ws, deleted_row):
                        end_row=max_row, end_column=max_col)
 
 
+def _fix_image_anchors_after_row_deletion(ws, deleted_row_0based):
+    """Shift image anchors >= deleted_row_0based down by 1 (0-based rows)."""
+    for img in ws._images:
+        try:
+            anchor = img.anchor
+            if hasattr(anchor, '_from'):
+                if anchor._from.row >= deleted_row_0based:
+                    anchor._from.row -= 1
+            if hasattr(anchor, 'to') and anchor.to is not None:
+                if anchor.to.row >= deleted_row_0based:
+                    anchor.to.row -= 1
+        except Exception:
+            pass
+
+
+def _fix_image_anchors_after_rows_deletion(ws, first_deleted_0based, count):
+    """Shift image anchors >= first_deleted_0based down by count (0-based rows)."""
+    for img in ws._images:
+        try:
+            anchor = img.anchor
+            if hasattr(anchor, '_from'):
+                if anchor._from.row >= first_deleted_0based:
+                    anchor._from.row -= count
+            if hasattr(anchor, 'to') and anchor.to is not None:
+                if anchor.to.row >= first_deleted_0based:
+                    anchor.to.row -= count
+        except Exception:
+            pass
+
+
+def _fix_image_anchors_after_col_deletion(ws, deleted_col_0based):
+    """Shift image anchor cols >= deleted_col_0based left by 1 (0-based cols)."""
+    for img in ws._images:
+        try:
+            anchor = img.anchor
+            if hasattr(anchor, '_from'):
+                if anchor._from.col >= deleted_col_0based:
+                    anchor._from.col -= 1
+            if hasattr(anchor, 'to') and anchor.to is not None:
+                if anchor.to.col >= deleted_col_0based:
+                    anchor.to.col -= 1
+        except Exception:
+            pass
+
+
 def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
     summary_name = detect_summary_sheet(wb)
     ws_summary   = wb[summary_name]
@@ -224,6 +269,8 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
                     correct_ref = f'{get_column_letter(cell.column)}{cell.row}'
                     if cell.hyperlink.ref != correct_ref:
                         cell.hyperlink.ref = correct_ref
+        # 4. Fix image anchor rows in summary sheet (deleted row = 12, 0-based = 11)
+        _fix_image_anchors_after_row_deletion(ws_summary, COMP_DOMAIN_ROW - 1)
         # Row mappings after deletion (each was original_row - 1)
         ver_row  = 12   # Version row  (was 13)
         yofu_row = 13   # Years of Use (was 14)
@@ -249,7 +296,14 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
 
     # Version string → B{ver_row} (master of B:E merge)
     # Total Versions  → G{ver_row} (free cell, not merged)
-    ws_summary.cell(ver_row, 2).value = globals_data['versions_str']
+    # Single-year versions are written as integers to match Excel native format
+    versions_val = globals_data['versions_str']
+    try:
+        if ',' not in str(versions_val):
+            versions_val = int(versions_val)
+    except (ValueError, TypeError):
+        pass
+    ws_summary.cell(ver_row, 2).value = versions_val
     ws_summary.cell(ver_row, 7).value = globals_data['total_versions']
 
     # Years of Use → B{yofu_row}
@@ -319,9 +373,20 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
                     val = format_date(val)
             safe_set(ws_data, r, col_idx, val)
 
+    # Apply correct date format to date columns before writing is complete
+    date_fmt = 'yyyy\\-mm\\-dd;@'
+    date_fields = ['First Event', 'Last Event']
+    for df in date_fields:
+        col_idx = col_map.get(df)
+        if col_idx:
+            for r in range(DATA_START_ROW, DATA_START_ROW + n_rows):
+                ws_data.cell(r, col_idx).number_format = date_fmt
+
     # Delete excess pre-bordered rows — footer shifts up naturally
     excess = TEMPLATE_DATA_ROWS - n_rows
     if excess > 0:
+        # Fix image anchors BEFORE deleting rows (anchors reference original positions)
+        _fix_image_anchors_after_rows_deletion(ws_data, DATA_START_ROW + n_rows - 1, excess)
         ws_data.delete_rows(DATA_START_ROW + n_rows, excess)
 
     data_end_row = DATA_START_ROW + n_rows - 1
@@ -343,6 +408,8 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
 
     for col_idx in sorted(cols_to_delete, reverse=True):
         ws_data.delete_cols(col_idx)
+        # Fix image anchor columns after column deletion (openpyxl doesn't update them)
+        _fix_image_anchors_after_col_deletion(ws_data, col_idx - 1)  # convert to 0-based
 
     return wb
 
