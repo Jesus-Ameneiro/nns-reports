@@ -337,6 +337,24 @@ def enrich_with_machines(machines, machines_df, all_domains):
                     if val and '=' not in val:
                         m['computer_domains'].add(val)
 
+        # Filter computer_domains to only those matching user-provided domains.
+        # A computer domain matches if it equals or is a sub-domain of any
+        # entry in all_domains (case-insensitive).  Unrecognised domains such
+        # as 'coinsa.com.ar' are silently dropped.
+        def _domain_matches(cd, domains):
+            cd = cd.lower().strip()
+            for d in domains:
+                d = d.lower().strip()
+                if cd == d or cd.endswith('.' + d):
+                    return True
+            return False
+
+        if all_domains:
+            m['computer_domains'] = {
+                cd for cd in m['computer_domains']
+                if _domain_matches(cd, all_domains)
+            }
+
         # Emails: machines file priority, events as supplement
         client_emails_mf = []
         add_emails_mf    = []
@@ -372,7 +390,14 @@ def build_rows(machines):
         if wp and len(wp) >= 4 and wp[-4:].isdigit():
             wp = wp[:-4].strip()
 
-        wt = (m['last_excluded_type'] or 'Excluded') if is_excluded else (winning_key(m['valid_event_types']) or 'Unknown')
+        # Normalize: the report always shows "SketchUp Pro" regardless of the
+        # source product name (SketchUp Make, SketchUp, SketchUp Pro, etc.).
+        if not is_excluded and wp not in ('-', 'N/A'):
+            wp = 'SketchUp Pro'
+
+        # Normalize: non-excluded machines always show "Unlicensed" in the
+        # report regardless of the actual event type (Personal, Undefined, etc.).
+        wt = (m['last_excluded_type'] or 'Excluded') if is_excluded else 'Unlicensed'
         wc = winning_key(m['countries']) or '-'
 
         sorted_vers = sorted(m['versions'], key=lambda x: (len(x), x))
@@ -384,6 +409,17 @@ def build_rows(machines):
         license_count = len(m['licenses']) if not is_excluded else 'N/A'
         first_ev = m['first_event'].date() if m['first_event'] else None
         last_ev  = m['last_event'].date()  if m['last_event']  else None
+
+        # Guard: skip rows that have no meaningful data beyond product/MAC.
+        # This catches machines whose events exist but produced no dates or
+        # versions (e.g. corrupt timestamps, missing version columns).
+        has_data = (
+            first_ev is not None
+            or (isinstance(license_count, int) and license_count > 0)
+            or (version_str not in ('-', 'N/A', '', None))
+        )
+        if not has_data and not is_excluded:
+            continue
 
         rows.append({
             'active_mac':      m.get('active_mac', '-'),
