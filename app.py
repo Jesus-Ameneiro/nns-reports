@@ -639,10 +639,8 @@ if generate and all_valid:
                 events_dfs=events_dfs,
                 primary_domain=primary_domain.strip(),
                 additional_domains=extra_domains_valid,
+                country=selected_country,
             )
-
-            # Set country from user input
-            globals_data['country'] = selected_country
 
             # Fill template
             filled_wb, template_type = fill_template(

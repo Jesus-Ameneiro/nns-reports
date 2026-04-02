@@ -374,7 +374,7 @@ def enrich_with_machines(machines, machines_df, all_domains):
 # STEP 5: BUILD FINAL ROW DATA
 # ---------------------------------------------------------------------------
 
-def build_rows(machines):
+def build_rows(machines, country=''):
     rows = []
     global_years    = set()
     global_versions = set()
@@ -398,7 +398,11 @@ def build_rows(machines):
         # Normalize: non-excluded machines always show "Unlicensed" in the
         # report regardless of the actual event type (Personal, Undefined, etc.).
         wt = (m['last_excluded_type'] or 'Excluded') if is_excluded else 'Unlicensed'
-        wc = winning_key(m['countries']) or '-'
+        # IP Country: only keep it if it matches the user-defined country.
+        # Any machine whose most-frequent country differs from the case
+        # country (e.g. a VPN or foreign IP) is shown as '-'.
+        _wc_raw = winning_key(m['countries']) or '-'
+        wc = _wc_raw if _wc_raw == country else '-'
 
         sorted_vers = sorted(m['versions'], key=lambda x: (len(x), x))
         version_str  = ', '.join(sorted_vers) if sorted_vers else '-'
@@ -458,20 +462,112 @@ def build_rows(machines):
         'total_licenses': global_licenses,
         'years_of_use':   len(global_years),
         'period':         compute_period(global_years),
-        'country':        '',
+        'country':        country,
     }
 
     return rows, globals_data
 
 
 # ---------------------------------------------------------------------------
+# STEP 3b: MERGE MACHINES WITH DUPLICATE ACTIVE MAC
+# ---------------------------------------------------------------------------
+
+def merge_duplicate_macs(machines, machines_df):
+    """
+    If multiple Machine IDs share the same Active MAC in the machines file,
+    they represent the same physical device and must be combined into one
+    entry before the report row is built.
+
+    Strategy:
+    - Build a MAC → [Machine IDs] map from the machines file.
+    - For each group of Machine IDs sharing a MAC, merge all their data
+      into the one with the most events (canonical), then drop the rest.
+    """
+    if machines_df.empty or 'Active MAC' not in machines_df.columns:
+        return machines
+
+    # Build MAC → sorted list of Machine IDs (only those present in machines dict)
+    mac_to_mids = {}
+    for _, row in machines_df.iterrows():
+        mid = str(row.get('Machine ID', '')).strip()
+        mac = str(row.get('Active MAC', '') or '').strip().upper()
+        if not mac or mac == 'NAN' or len(mac) != 17:
+            continue
+        if mid not in machines:
+            continue
+        mac_to_mids.setdefault(mac, []).append(mid)
+
+    for mac, mids in mac_to_mids.items():
+        if len(mids) < 2:
+            continue  # no duplicates for this MAC
+
+        # Pick the Machine ID with the most events as the canonical entry
+        canonical = max(mids, key=lambda m: machines[m]['total_events'])
+        mc = machines[canonical]
+
+        for other_mid in mids:
+            if other_mid == canonical:
+                continue
+            mo = machines[other_mid]
+
+            # Merge sets
+            mc['versions']         |= mo['versions']
+            mc['licenses']         |= mo['licenses']
+            mc['machine_years']    |= mo['machine_years']
+            mc['hostnames']        |= mo['hostnames']
+            mc['usernames']        |= mo['usernames']
+            mc['computer_domains'] |= mo['computer_domains']
+
+            # Merge counters (dicts)
+            for k, v in mo['base_products'].items():
+                mc['base_products'][k] += v
+            for k, v in mo['valid_event_types'].items():
+                mc['valid_event_types'][k] += v
+            for k, v in mo['countries'].items():
+                mc['countries'][k] += v
+            for k, v in mo['active_macs_ev'].items():
+                mc['active_macs_ev'][k] += v
+
+            # Merge event counts
+            mc['total_events']    += mo['total_events']
+            mc['excluded_count']  += mo['excluded_count']
+
+            # Timestamps: earliest first, latest last
+            if mo['first_event'] is not None:
+                if mc['first_event'] is None or mo['first_event'] < mc['first_event']:
+                    mc['first_event'] = mo['first_event']
+            if mo['last_event'] is not None:
+                if mc['last_event'] is None or mo['last_event'] > mc['last_event']:
+                    mc['last_event'] = mo['last_event']
+
+            # Emails: merge without duplicates, canonical list first
+            for e in mo['client_emails_ev']:
+                if e not in mc['client_emails_ev']:
+                    mc['client_emails_ev'].append(e)
+            for e in mo['add_emails_ev']:
+                if e not in mc['add_emails_ev']:
+                    mc['add_emails_ev'].append(e)
+
+            # Keep the last excluded type if canonical has none
+            if not mc['last_excluded_type'] and mo['last_excluded_type']:
+                mc['last_excluded_type'] = mo['last_excluded_type']
+
+            # Remove the merged-in entry
+            del machines[other_mid]
+
+    return machines
+
+
+# ---------------------------------------------------------------------------
 # MAIN ENTRY POINT
 # ---------------------------------------------------------------------------
 
-def run_processing(machines_dfs, events_dfs, primary_domain, additional_domains):
+def run_processing(machines_dfs, events_dfs, primary_domain, additional_domains,
+                   country=''):
     all_domains = [d.strip() for d in [primary_domain] + additional_domains if d.strip()]
     machines_df = merge_machines(machines_dfs)
     events_df   = merge_case_events(events_dfs)
     machines    = process_case_events(events_df)
+    machines    = merge_duplicate_macs(machines, machines_df)
     machines    = enrich_with_machines(machines, machines_df, all_domains)
-    return build_rows(machines)
+    return build_rows(machines, country=country)
