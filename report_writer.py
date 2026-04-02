@@ -162,11 +162,11 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
 # CS TEMPLATE FILLER
 # ---------------------------------------------------------------------------
 
-def _fix_merged_cells_after_row_deletion(ws, deleted_row):
+def _fix_merged_cells_after_row_deletion(ws, first_deleted_row, count=1):
     """
     openpyxl's delete_rows() shifts cell contents but does NOT update merged
-    cell range coordinates. This function manually rebuilds the merged cell
-    registry, decrementing any row number >= deleted_row by 1.
+    cell range coordinates. Rebuild the registry, decrementing any row number
+    >= first_deleted_row by count (number of rows deleted).
     """
     old_ranges = [
         (mc.min_row, mc.min_col, mc.max_row, mc.max_col)
@@ -174,19 +174,21 @@ def _fix_merged_cells_after_row_deletion(ws, deleted_row):
     ]
     ws.merged_cells.ranges.clear()
     for (min_row, min_col, max_row, max_col) in old_ranges:
-        # Drop merges that were entirely on the deleted row
-        if min_row == deleted_row and max_row == deleted_row:
+        # Drop merges entirely within the deleted range
+        if min_row >= first_deleted_row and max_row < first_deleted_row + count:
             continue
-        # Keep merges entirely above the deleted row unchanged
-        if max_row < deleted_row:
+        # Keep merges entirely above the deleted range unchanged
+        if max_row < first_deleted_row:
             ws.merge_cells(start_row=min_row, start_column=min_col,
                            end_row=max_row, end_column=max_col)
             continue
-        # Shift rows at or below the deleted row up by 1
-        if min_row >= deleted_row:
-            min_row -= 1
-        if max_row >= deleted_row:
-            max_row -= 1
+        # Shift rows at or below the first deleted row
+        if min_row >= first_deleted_row:
+            min_row -= count
+        if max_row >= first_deleted_row:
+            max_row -= count
+        if min_row < 1 or max_row < 1 or min_row > max_row:
+            continue
         ws.merge_cells(start_row=min_row, start_column=min_col,
                        end_row=max_row, end_column=max_col)
 
@@ -219,6 +221,32 @@ def _fix_image_anchors_after_rows_deletion(ws, first_deleted_0based, count):
                     anchor.to.row -= count
         except Exception:
             pass
+
+
+def _fix_merged_cells_after_col_deletion(ws, deleted_col_1based):
+    """
+    openpyxl's delete_cols() does not update merged cell col coordinates.
+    Decrement any col index >= deleted_col_1based by 1.
+    Merges entirely within one cell or that span the deleted col are dropped.
+    """
+    old_ranges = [
+        (mc.min_row, mc.min_col, mc.max_row, mc.max_col)
+        for mc in ws.merged_cells.ranges
+    ]
+    ws.merged_cells.ranges.clear()
+    for (min_row, min_col, max_row, max_col) in old_ranges:
+        # Drop merges entirely on the deleted column
+        if min_col == deleted_col_1based and max_col == deleted_col_1based:
+            continue
+        # Shift cols >= deleted col left by 1
+        if min_col >= deleted_col_1based:
+            min_col -= 1
+        if max_col >= deleted_col_1based:
+            max_col -= 1
+        if min_col > max_col:
+            continue
+        ws.merge_cells(start_row=min_row, start_column=min_col,
+                       end_row=max_row, end_column=max_col)
 
 
 def _fix_image_anchors_after_col_deletion(ws, deleted_col_0based):
@@ -388,6 +416,8 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
         # Fix image anchors BEFORE deleting rows (anchors reference original positions)
         _fix_image_anchors_after_rows_deletion(ws_data, DATA_START_ROW + n_rows - 1, excess)
         ws_data.delete_rows(DATA_START_ROW + n_rows, excess)
+        # Fix merged cell ranges in Data sheet (delete_rows doesn't update them)
+        _fix_merged_cells_after_row_deletion(ws_data, DATA_START_ROW + n_rows, excess)
 
     data_end_row = DATA_START_ROW + n_rows - 1
 
@@ -408,8 +438,10 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
 
     for col_idx in sorted(cols_to_delete, reverse=True):
         ws_data.delete_cols(col_idx)
-        # Fix image anchor columns after column deletion (openpyxl doesn't update them)
+        # Fix image anchor columns (openpyxl doesn't update them after delete_cols)
         _fix_image_anchors_after_col_deletion(ws_data, col_idx - 1)  # convert to 0-based
+        # Fix merged cell col ranges (openpyxl doesn't update them after delete_cols)
+        _fix_merged_cells_after_col_deletion(ws_data, col_idx)
 
     return wb
 
