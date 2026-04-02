@@ -116,8 +116,14 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
             val = row.get(field, '-')
             if val is None:
                 val = '-'
-            if field in ('first_event', 'last_event'):
-                val = format_date(val)
+            # Write dates as datetime objects to preserve Excel date formatting
+            if field in ('first_event', 'last_event') and val != '-':
+                try:
+                    from datetime import datetime, date as date_type
+                    if isinstance(val, date_type) and not isinstance(val, datetime):
+                        val = datetime(val.year, val.month, val.day)
+                except Exception:
+                    val = format_date(val)
             safe_set(ws_data, r, col_idx, val)
 
     # Delete excess pre-bordered rows so footer shifts up naturally
@@ -127,20 +133,13 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
 
     data_end_row = DATA_START_ROW + n_rows - 1
 
-    # Clean up stale hyperlinks that openpyxl doesn't shift correctly with delete_rows
-    try:
-        from openpyxl.utils.cell import coordinate_to_tuple
-        clean_hyperlinks = []
-        for hl in ws_data._hyperlinks:
-            try:
-                row_num, _ = coordinate_to_tuple(str(hl.ref).split(':')[0])
-                if row_num <= data_end_row + 15:   # keep hyperlinks in data+footer area
-                    clean_hyperlinks.append(hl)
-            except Exception:
-                clean_hyperlinks.append(hl)
-        ws_data._hyperlinks = clean_hyperlinks
-    except Exception:
-        pass
+    # Fix stale cell-level hyperlink refs after delete_rows
+    for row in ws_data.iter_rows():
+        for cell in row:
+            if cell.hyperlink and cell.hyperlink.ref:
+                correct_ref = f'{get_column_letter(cell.column)}{cell.row}'
+                if cell.hyperlink.ref != correct_ref:
+                    cell.hyperlink.ref = correct_ref
 
     # ---- Column deletion ----
     # Re-read col_map after potential column deletions from Computer Domains check
@@ -163,17 +162,44 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
 # CS TEMPLATE FILLER
 # ---------------------------------------------------------------------------
 
+def _fix_merged_cells_after_row_deletion(ws, deleted_row):
+    """
+    openpyxl's delete_rows() shifts cell contents but does NOT update merged
+    cell range coordinates. This function manually rebuilds the merged cell
+    registry, decrementing any row number >= deleted_row by 1.
+    """
+    old_ranges = [
+        (mc.min_row, mc.min_col, mc.max_row, mc.max_col)
+        for mc in ws.merged_cells.ranges
+    ]
+    ws.merged_cells.ranges.clear()
+    for (min_row, min_col, max_row, max_col) in old_ranges:
+        # Drop merges that were entirely on the deleted row
+        if min_row == deleted_row and max_row == deleted_row:
+            continue
+        # Keep merges entirely above the deleted row unchanged
+        if max_row < deleted_row:
+            ws.merge_cells(start_row=min_row, start_column=min_col,
+                           end_row=max_row, end_column=max_col)
+            continue
+        # Shift rows at or below the deleted row up by 1
+        if min_row >= deleted_row:
+            min_row -= 1
+        if max_row >= deleted_row:
+            max_row -= 1
+        ws.merge_cells(start_row=min_row, start_column=min_col,
+                       end_row=max_row, end_column=max_col)
+
+
 def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
     summary_name = detect_summary_sheet(wb)
     ws_summary   = wb[summary_name]
     ws_data      = wb['Data']
 
-    # ---- Summary sheet ----
-    ws_summary['B9']  = ', '.join(case_ids)
-    ws_summary['B10'] = country
-    ws_summary['B11'] = entity_name
-
-    # Computer Domain row
+    # ---- Determine if Computer Domain row should be deleted ----
+    # Template row 12 = 'Computer Domain'.
+    # When no domain data is present, delete that row entirely so all
+    # subsequent rows shift up by 1, matching the expected output exactly.
     all_comp_domains = set()
     for row in rows:
         cd = row.get('computer_domain', '-')
@@ -182,41 +208,75 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
                 d = d.strip()
                 if d:
                     all_comp_domains.add(d)
-    ws_summary['B12'] = ', '.join(sorted(all_comp_domains)) if all_comp_domains else '-'
 
-    ws_summary['B13'] = globals_data['versions_str']
-    ws_summary['G13'] = globals_data['total_versions']
-    ws_summary['B14'] = globals_data['years_of_use']
-    ws_summary['D14'] = globals_data['period']
+    delete_domain_row = len(all_comp_domains) == 0
+    COMP_DOMAIN_ROW   = 12
 
-    # Machines / Users / Events value row (one above the 'Machines' label row)
-    machines_label_row = None
-    for r in range(15, 30):
-        for c in range(1, 8):
-            if ws_summary.cell(row=r, column=c).value and \
-               str(ws_summary.cell(row=r, column=c).value).strip() == 'Machines':
-                machines_label_row = r
+    if delete_domain_row:
+        # 1. Delete the row
+        ws_summary.delete_rows(COMP_DOMAIN_ROW)
+        # 2. Fix merged cell coordinates (openpyxl bug: they don't shift automatically)
+        _fix_merged_cells_after_row_deletion(ws_summary, COMP_DOMAIN_ROW)
+        # 3. Fix stale cell-level hyperlink refs in summary sheet after row deletion
+        for summ_row in ws_summary.iter_rows():
+            for cell in summ_row:
+                if cell.hyperlink and cell.hyperlink.ref:
+                    correct_ref = f'{get_column_letter(cell.column)}{cell.row}'
+                    if cell.hyperlink.ref != correct_ref:
+                        cell.hyperlink.ref = correct_ref
+        # Row mappings after deletion (each was original_row - 1)
+        ver_row  = 12   # Version row  (was 13)
+        yofu_row = 13   # Years of Use (was 14)
+        vals_row = 18   # Machines/Users/Events values (was 19)
+        lic_row  = 30   # Licensed copies value row (was 31)
+        # 3. Update price formula: it referenced C31 which is now C30
+        for r in range(25, 35):
+            cell = ws_summary.cell(r, 1)
+            if cell.value and 'C31' in str(cell.value):
+                cell.value = str(cell.value).replace('C31', 'C30')
                 break
-        if machines_label_row:
-            break
-    if machines_label_row:
-        val_row = machines_label_row - 1
-        safe_set(ws_summary, val_row, 2, globals_data['total_machines'])
-        safe_set(ws_summary, val_row, 4, globals_data['total_users'])
-        safe_set(ws_summary, val_row, 7, globals_data['total_events'])
+    else:
+        ws_summary['B12'] = ', '.join(sorted(all_comp_domains))
+        ver_row  = 13
+        yofu_row = 14
+        vals_row = 19
+        lic_row  = 31
 
-    # Licensed copies for price formula
-    ws_summary['C31'] = globals_data['total_licenses']
+    # ---- Summary sheet: fill all data fields ----
+    ws_summary['B9']  = ', '.join(case_ids)
+    ws_summary['B10'] = country
+    ws_summary['B11'] = entity_name
 
-    # ---- Data sheet ----
-    safe_set(ws_data, 6, 2, ', '.join(case_ids))
-    safe_set(ws_data, 7, 2, entity_name)
-    safe_set(ws_data, 8, 2, country)
+    # Version string → B{ver_row} (master of B:E merge)
+    # Total Versions  → G{ver_row} (free cell, not merged)
+    ws_summary.cell(ver_row, 2).value = globals_data['versions_str']
+    ws_summary.cell(ver_row, 7).value = globals_data['total_versions']
+
+    # Years of Use → B{yofu_row}
+    # Period       → D{yofu_row} (master of D:G merge)
+    ws_summary.cell(yofu_row, 2).value = globals_data['years_of_use']
+    ws_summary.cell(yofu_row, 4).value = globals_data['period']
+
+    # Machines / Users / Events numeric values
+    # B, D, G are masters of their merged spans in the values row
+    safe_set(ws_summary, vals_row, 2, globals_data['total_machines'])
+    safe_set(ws_summary, vals_row, 4, globals_data['total_users'])
+    safe_set(ws_summary, vals_row, 7, globals_data['total_events'])
+
+    # Licensed copies (feeds the price formula)
+    safe_set(ws_summary, lic_row, 3, globals_data['total_licenses'])
+
+    # ---- Data sheet: header rows ----
+    safe_set(ws_data, 6, 2,  ', '.join(case_ids))
+    safe_set(ws_data, 7, 2,  entity_name)
+    safe_set(ws_data, 8, 2,  country)
+    # DATE: label at col 10, =TODAY() formula at col 11
+    safe_set(ws_data, 7, 10, 'DATE:')
     safe_set(ws_data, 7, 11, '=TODAY()')
 
     DATA_HEADER_ROW    = 11
     DATA_START_ROW     = 12
-    TEMPLATE_DATA_ROWS = 12   # template has 12 pre-bordered rows (12-23)
+    TEMPLATE_DATA_ROWS = 12   # 12 pre-bordered rows (12-23) in the blank template
 
     col_map = {}
     for cell in ws_data[DATA_HEADER_ROW]:
@@ -240,7 +300,7 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
 
     n_rows = len(rows)
 
-    # Write data into pre-bordered slots
+    # Write machine data rows — dates as datetime objects (preserves template formatting)
     for idx, row in enumerate(rows):
         r = DATA_START_ROW + idx
         for header, field in cs_col_order:
@@ -250,8 +310,13 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
             val = row.get(field, '-')
             if val is None:
                 val = '-'
-            if field in ('first_event', 'last_event'):
-                val = format_date(val)
+            if field in ('first_event', 'last_event') and val != '-':
+                try:
+                    from datetime import datetime, date as date_type
+                    if isinstance(val, date_type) and not isinstance(val, datetime):
+                        val = datetime(val.year, val.month, val.day)
+                except Exception:
+                    val = format_date(val)
             safe_set(ws_data, r, col_idx, val)
 
     # Delete excess pre-bordered rows — footer shifts up naturally
@@ -261,19 +326,20 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
 
     data_end_row = DATA_START_ROW + n_rows - 1
 
+    # Fix stale cell-level hyperlink refs after delete_rows
+    for data_row in ws_data.iter_rows():
+        for cell in data_row:
+            if cell.hyperlink and cell.hyperlink.ref:
+                correct_ref = f'{get_column_letter(cell.column)}{cell.row}'
+                if cell.hyperlink.ref != correct_ref:
+                    cell.hyperlink.ref = correct_ref
+
     # ---- Column deletion ----
     cols_to_delete = []
     for header in ['Computer Domains', 'Client Email Addresses']:
         col_idx = col_map.get(header)
         if col_idx and col_all_dash(ws_data, col_idx, DATA_START_ROW, data_end_row):
             cols_to_delete.append(col_idx)
-
-    if col_map.get('Computer Domains') in cols_to_delete:
-        for r in range(1, ws_summary.max_row + 1):
-            if ws_summary.cell(row=r, column=1).value == 'Computer Domain':
-                safe_set(ws_summary, r, 1, None)
-                safe_set(ws_summary, r, 2, None)
-                break
 
     for col_idx in sorted(cols_to_delete, reverse=True):
         ws_data.delete_cols(col_idx)
