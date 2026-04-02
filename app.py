@@ -11,6 +11,7 @@ from report_writer import fill_template, patch_and_save
 # CONFIG
 # ---------------------------------------------------------------------------
 
+APP_VERSION = "1.0.3"
 CONFIG_PATH = Path(__file__).parent / 'config.json'
 
 @st.cache_data
@@ -78,7 +79,47 @@ html, body, [data-testid="stAppViewContainer"] {
 [data-testid="stDecoration"] { display: none; }
 
 /* Hide Streamlit branding */
-#MainMenu, footer { visibility: hidden; }
+#MainMenu { visibility: hidden; }
+
+/* App footer */
+.app-footer {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 0.5rem 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 999;
+    gap: 1rem;
+}
+.footer-logo {
+    font-family: var(--sans);
+    font-size: 1.1rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    color: var(--text);
+}
+.footer-logo span { color: var(--accent); }
+.footer-disclaimer {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    text-align: center;
+    line-height: 1.4;
+    flex: 1;
+}
+.footer-version {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+/* Offset main content so footer doesn't overlap it */
+[data-testid="stAppViewContainer"] > .main > .block-container {
+    padding-bottom: 5rem !important;
+}
 
 /* Typography */
 h1, h2, h3, h4 { font-family: var(--sans); font-weight: 800; color: var(--text); }
@@ -713,3 +754,18 @@ if st.session_state.get('processed'):
         '<div class="alert alert-success" style="margin-top:0.75rem;">✓ Report generated successfully. Download and verify the output before sharing.</div>',
         unsafe_allow_html=True
     )
+
+# ---------------------------------------------------------------------------
+# APP FOOTER (always visible)
+# ---------------------------------------------------------------------------
+st.markdown(f"""
+<div class="app-footer">
+    <div class="footer-logo">RUVI<span>XX</span></div>
+    <div class="footer-disclaimer">
+        ⚠ Prototype — Internal Use Only &nbsp;|&nbsp;
+        Automates the NNS Evidence Report process for LATAM at Ruvixx &nbsp;|&nbsp;
+        All data and results are considered <strong>confidential</strong>
+    </div>
+    <div class="footer-version">v{APP_VERSION}</div>
+</div>
+""", unsafe_allow_html=True)

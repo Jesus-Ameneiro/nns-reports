@@ -84,6 +84,13 @@ def select_email(client_emails, additional_emails, all_domains):
 
 
 def clean_version(v):
+    """
+    Normalize version to a 4-digit year string.
+    Handles:
+      - 4-digit years already: 2023, 2024.0  -> '2023', '2024'
+      - 2-digit semver prefix: 23.1.0, 24.0  -> '2023', '2024'
+      - Plain 2-digit int: 23, 24            -> '2023', '2024'
+    """
     if v is None:
         return None
     try:
@@ -92,10 +99,19 @@ def clean_version(v):
     except Exception:
         pass
     s = str(v).strip().rstrip('.')
+    if not s:
+        return None
+    # Use only the first numeric segment (before any dot)
+    first_seg = s.split('.')[0].strip()
     try:
-        return str(int(float(s)))
+        n = int(first_seg)
+        if 2000 <= n <= 2099:   # already a 4-digit year
+            return str(n)
+        if 0 <= n <= 99:        # 2-digit year prefix (e.g. 23 -> 2023)
+            return str(2000 + n)
     except (ValueError, OverflowError):
-        return s if s else None
+        pass
+    return s if s else None
 
 
 def is_excluded_type(event_type):
