@@ -264,6 +264,24 @@ def _fix_image_anchors_after_col_deletion(ws, deleted_col_0based):
             pass
 
 
+def _copy_row_style(ws, src_row, dst_row, max_col):
+    """Copy cell styles (font, border, fill, alignment, number_format) from src_row to dst_row."""
+    from openpyxl.styles import Font, Border, Side, PatternFill, Alignment, numbers
+    import copy
+    for col in range(1, max_col + 1):
+        src = ws.cell(src_row, col)
+        dst = ws.cell(dst_row, col)
+        try:
+            dst.font      = copy.copy(src.font)
+            dst.border    = copy.copy(src.border)
+            dst.fill      = copy.copy(src.fill)
+            dst.alignment = copy.copy(src.alignment)
+            if src.number_format and src.number_format != 'General':
+                dst.number_format = src.number_format
+        except Exception:
+            pass
+
+
 def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
     summary_name = detect_summary_sheet(wb)
     ws_summary   = wb[summary_name]
@@ -352,9 +370,12 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
     safe_set(ws_data, 6, 2,  ', '.join(case_ids))
     safe_set(ws_data, 7, 2,  entity_name)
     safe_set(ws_data, 8, 2,  country)
-    # DATE: label at col 10, =TODAY() formula at col 11
+    # DATE: label at col 10, current date at col 11 with mm-dd-yy format
+    from datetime import datetime as _dt
     safe_set(ws_data, 7, 10, 'DATE:')
-    safe_set(ws_data, 7, 11, '=TODAY()')
+    today_cell = ws_data.cell(7, 11)
+    today_cell.value = _dt.today().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_cell.number_format = 'mm-dd-yy'
 
     DATA_HEADER_ROW    = 11
     DATA_START_ROW     = 12
@@ -383,8 +404,13 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
     n_rows = len(rows)
 
     # Write machine data rows — dates as datetime objects (preserves template formatting)
+    STYLE_SRC_ROW = DATA_START_ROW  # template data row to copy styles from
+    n_template_cols = max(col_map.values()) if col_map else 12
     for idx, row in enumerate(rows):
         r = DATA_START_ROW + idx
+        # For rows beyond the template pre-bordered range, copy styles from template row
+        if idx >= TEMPLATE_DATA_ROWS:
+            _copy_row_style(ws_data, STYLE_SRC_ROW, r, n_template_cols)
         for header, field in cs_col_order:
             col_idx = col_map.get(header)
             if col_idx is None:
@@ -402,7 +428,7 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
             safe_set(ws_data, r, col_idx, val)
 
     # Apply correct date format to date columns before writing is complete
-    date_fmt = 'yyyy\\-mm\\-dd;@'
+    date_fmt = 'yyyy\\-mm\\-dd'
     date_fields = ['First Event', 'Last Event']
     for df in date_fields:
         col_idx = col_map.get(df)
@@ -410,14 +436,60 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
             for r in range(DATA_START_ROW, DATA_START_ROW + n_rows):
                 ws_data.cell(r, col_idx).number_format = date_fmt
 
-    # Delete excess pre-bordered rows — footer shifts up naturally
+    # Template has TEMPLATE_DATA_ROWS pre-bordered rows.
+    # If n_rows < template: delete excess rows (footer shifts up).
+    # If n_rows > template: extra rows beyond template must push footer down.
     excess = TEMPLATE_DATA_ROWS - n_rows
+    TEMPLATE_LAST_DATA_ROW = DATA_START_ROW + TEMPLATE_DATA_ROWS - 1  # row 23
+    # Gap from last template data row to footer note and image in template
+    NOTE_ROW_IN_TEMPLATE  = 32   # template row for the footer note in Data sheet
+    IMAGE_ROW_IN_TEMPLATE = 31   # template row (1-based) for footer image
+    NOTE_GAP  = NOTE_ROW_IN_TEMPLATE  - TEMPLATE_LAST_DATA_ROW  # 9
+    IMAGE_GAP = IMAGE_ROW_IN_TEMPLATE - TEMPLATE_LAST_DATA_ROW  # 8
+
     if excess > 0:
-        # Fix image anchors BEFORE deleting rows (anchors reference original positions)
+        # Fewer machines than template rows: delete excess, footer shifts up naturally
         _fix_image_anchors_after_rows_deletion(ws_data, DATA_START_ROW + n_rows - 1, excess)
         ws_data.delete_rows(DATA_START_ROW + n_rows, excess)
-        # Fix merged cell ranges in Data sheet (delete_rows doesn't update them)
         _fix_merged_cells_after_row_deletion(ws_data, DATA_START_ROW + n_rows, excess)
+    elif excess < 0:
+        # More machines than template rows: footer stays at original template position
+        # but machine data overwrites it. Explicitly push footer below last data row.
+        extra_rows = -excess  # how many rows beyond template
+        data_end = DATA_START_ROW + n_rows - 1
+
+        # Write footer note at correct position
+        note_row  = data_end + NOTE_GAP
+        image_row = data_end + IMAGE_GAP  # 0-based = image_row - 1
+
+        # Re-write note text (template note at row 32 was overwritten by machine data)
+        note_text = ws_data.cell(NOTE_ROW_IN_TEMPLATE, 1).value
+        if not note_text or 'Note:' not in str(note_text):
+            note_text = ('Note: This document contains confidential information and is '
+                         'provided exclusively within the framework of License Compliance.')
+        ws_data.cell(note_row, 1).value = note_text
+
+        # Shift footer merges (A32:J32 and D28:M28) to correct rows
+        old_ranges = [
+            (mc.min_row, mc.min_col, mc.max_row, mc.max_col)
+            for mc in ws_data.merged_cells.ranges
+        ]
+        ws_data.merged_cells.ranges.clear()
+        for (min_row, min_col, max_row, max_col) in old_ranges:
+            if min_row >= NOTE_ROW_IN_TEMPLATE - NOTE_GAP:  # footer area rows (>=28)
+                min_row += extra_rows
+                max_row += extra_rows
+            ws_data.merge_cells(start_row=min_row, start_column=min_col,
+                                 end_row=max_row, end_column=max_col)
+
+        # Shift footer image anchor to correct row (0-based)
+        target_img_row_0based = image_row - 1  # 0-based
+        for img in ws_data._images:
+            try:
+                if img.anchor._from.row >= IMAGE_ROW_IN_TEMPLATE - 1:  # footer image area
+                    img.anchor._from.row = target_img_row_0based
+            except Exception:
+                pass
 
     data_end_row = DATA_START_ROW + n_rows - 1
 
