@@ -390,10 +390,10 @@ def build_rows(machines, country=''):
         if wp and len(wp) >= 4 and wp[-4:].isdigit():
             wp = wp[:-4].strip()
 
-        # Normalize: the report always shows "SketchUp Pro" regardless of the
-        # source product name (SketchUp Make, SketchUp, SketchUp Pro, etc.).
+        # Normalize: the report always shows "SketchUp" regardless of the
+        # source product name (SketchUp Make, SketchUp Pro, etc.).
         if not is_excluded and wp not in ('-', 'N/A'):
-            wp = 'SketchUp Pro'
+            wp = 'SketchUp'
 
         # Normalize: non-excluded machines always show "Unlicensed" in the
         # report regardless of the actual event type (Personal, Undefined, etc.).
