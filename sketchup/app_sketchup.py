@@ -1,0 +1,423 @@
+"""
+SketchUp (Trimble) — NNS Evidence Report Generator
+MCC and CS regions.
+All business logic lives in sketchup/processor.py and sketchup/report_writer.py.
+This module exposes a single function:  render()
+Called by the root app.py inside the SketchUp tab.
+"""
+
+import io
+import json
+import openpyxl
+import pandas as pd
+import streamlit as st
+import traceback
+from pathlib import Path
+
+from sketchup.processor    import run_processing
+from sketchup.report_writer import fill_template, patch_and_save
+
+# ---------------------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------------------
+
+CONFIG_PATH = Path(__file__).parent / 'config.json'
+
+
+def _load_config():
+    with open(CONFIG_PATH) as f:
+        return json.load(f)
+
+
+def _get_region(country, config):
+    for region, data in config['regions'].items():
+        if country in data['countries']:
+            return region
+    return None
+
+
+def _all_countries(config):
+    countries = []
+    for region, data in config['regions'].items():
+        countries.extend(data['countries'])
+    return sorted(countries)
+
+
+# ---------------------------------------------------------------------------
+# MAIN RENDER FUNCTION
+# ---------------------------------------------------------------------------
+
+def render():
+    """Render the full SketchUp Evidence Report Generator UI inside its tab."""
+
+    config         = _load_config()
+    countries_list = _all_countries(config)
+
+    # -----------------------------------------------------------------------
+    # LAYOUT: Two columns — inputs left, files right
+    # -----------------------------------------------------------------------
+
+    left_col, right_col = st.columns([1, 1], gap='large')
+
+    # =======================================================================
+    # LEFT COLUMN — Case Information
+    # =======================================================================
+
+    with left_col:
+
+        # --- CASE INFORMATION ---
+        st.markdown('<div class="section-label">01 · Case Information</div>',
+                    unsafe_allow_html=True)
+
+        entity_name = st.text_input(
+            'Entity / Organization Name',
+            placeholder='e.g. Acme Corp S.A.',
+            key='sk_entity_name',
+        )
+
+        # Dynamic Case ID list
+        if 'sk_case_ids' not in st.session_state:
+            st.session_state['sk_case_ids'] = ['']
+
+        st.markdown('<div class="sub-label">Case ID(s)</div>', unsafe_allow_html=True)
+        for i, cid in enumerate(st.session_state['sk_case_ids']):
+            c1, c2, c3 = st.columns([6, 1, 1])
+            with c1:
+                st.session_state['sk_case_ids'][i] = st.text_input(
+                    f'Case ID {i+1}', value=cid,
+                    label_visibility='collapsed',
+                    placeholder='e.g. 1234567#1',
+                    key=f'sk_cid_{i}',
+                )
+            with c2:
+                if st.button('＋', key=f'sk_add_case_{i}',
+                             help='Add another Case ID'):
+                    st.session_state['sk_case_ids'].append('')
+                    st.rerun()
+            with c3:
+                if len(st.session_state['sk_case_ids']) > 1:
+                    if st.button('✕', key=f'sk_rem_case_{i}',
+                                 help='Remove'):
+                        st.session_state['sk_case_ids'].pop(i)
+                        st.rerun()
+
+        case_ids_valid = [c.strip() for c in st.session_state['sk_case_ids']
+                          if c.strip()]
+
+        # --- COUNTRY & REGION ---
+        st.markdown('<div class="section-label" style="margin-top:1.5rem;">'
+                    '02 · Country & Region</div>', unsafe_allow_html=True)
+
+        selected_country = st.selectbox(
+            'Country',
+            options=[''] + countries_list,
+            key='sk_country',
+        )
+
+        selected_region = None
+        if selected_country:
+            selected_region = _get_region(selected_country, config)
+            region_name     = config['regions'][selected_region]['name']
+            badge_class     = 'region-mcc' if selected_region == 'MCC' else 'region-cs'
+            st.markdown(
+                f'<span class="region-badge {badge_class}">'
+                f'{selected_region} · {region_name}</span>',
+                unsafe_allow_html=True,
+            )
+
+        # --- DOMAIN INFORMATION ---
+        st.markdown('<div class="section-label" style="margin-top:1.5rem;">'
+                    '03 · Domain Information</div>', unsafe_allow_html=True)
+
+        primary_domain = st.text_input(
+            'Primary Domain',
+            placeholder='e.g. company.com',
+            key='sk_primary_domain',
+        )
+
+        if 'sk_extra_domains' not in st.session_state:
+            st.session_state['sk_extra_domains'] = []
+
+        if st.session_state['sk_extra_domains']:
+            st.markdown('<div class="sub-label">Additional Domains</div>',
+                        unsafe_allow_html=True)
+        for i, dom in enumerate(st.session_state['sk_extra_domains']):
+            c1, c2 = st.columns([7, 1])
+            with c1:
+                st.session_state['sk_extra_domains'][i] = st.text_input(
+                    f'Domain {i+1}', value=dom,
+                    label_visibility='collapsed',
+                    placeholder='e.g. subsidiary.com',
+                    key=f'sk_dom_{i}',
+                )
+            with c2:
+                if st.button('✕', key=f'sk_rem_dom_{i}', help='Remove'):
+                    st.session_state['sk_extra_domains'].pop(i)
+                    st.rerun()
+
+        if st.button('＋ Add domain', key='sk_add_dom'):
+            st.session_state['sk_extra_domains'].append('')
+            st.rerun()
+
+        extra_domains_valid = [d.strip() for d in st.session_state['sk_extra_domains']
+                               if d.strip()]
+
+    # =======================================================================
+    # RIGHT COLUMN — File Uploads
+    # =======================================================================
+
+    with right_col:
+
+        # --- MACHINE FILES ---
+        st.markdown('<div class="section-label">04 · Machine Files</div>',
+                    unsafe_allow_html=True)
+        machine_files = st.file_uploader(
+            'Upload exported machine file(s)',
+            type=['xlsx'],
+            accept_multiple_files=True,
+            key='sk_machine_files',
+        )
+        if machine_files:
+            for f in machine_files:
+                st.markdown(
+                    f'<div class="file-tag">📄 {f.name}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        # --- CASE EVENT FILES ---
+        st.markdown('<div class="section-label" style="margin-top:1.5rem;">'
+                    '05 · Case Event Files</div>', unsafe_allow_html=True)
+        event_files = st.file_uploader(
+            'Upload exported case event file(s)',
+            type=['xlsx'],
+            accept_multiple_files=True,
+            key='sk_event_files',
+        )
+        if event_files:
+            for f in event_files:
+                st.markdown(
+                    f'<div class="file-tag">📄 {f.name}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        # --- TEMPLATE FILE ---
+        st.markdown('<div class="section-label" style="margin-top:1.5rem;">'
+                    '06 · Template File</div>', unsafe_allow_html=True)
+        template_file = st.file_uploader(
+            'Upload the Evidence Report template',
+            type=['xlsx'],
+            key='sk_template_file',
+        )
+        if template_file:
+            st.markdown(
+                f'<div class="file-tag">📋 {template_file.name}</div>',
+                unsafe_allow_html=True,
+            )
+
+    # -----------------------------------------------------------------------
+    # VALIDATION & GENERATE
+    # -----------------------------------------------------------------------
+
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+
+    checks = {
+        'Entity name':     bool(entity_name and entity_name.strip()),
+        'Case ID(s)':      bool(case_ids_valid),
+        'Country':         bool(selected_country),
+        'Primary domain':  bool(primary_domain and primary_domain.strip()),
+        'Machine file(s)': bool(machine_files),
+        'Case event(s)':   bool(event_files),
+        'Template file':   bool(template_file),
+    }
+    all_valid = all(checks.values())
+
+    st.markdown('<div class="section-label">07 · Validation</div>',
+                unsafe_allow_html=True)
+    check_cols = st.columns(4)
+    for idx, (lbl, ok) in enumerate(checks.items()):
+        with check_cols[idx % 4]:
+            dot = 'dot-green' if ok else 'dot-red'
+            st.markdown(
+                f'<div class="status-row">'
+                f'<div class="dot {dot}"></div>{lbl}</div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+
+    gen_col, _ = st.columns([1, 2])
+    with gen_col:
+        generate = st.button(
+            '⚡ Generate Evidence Report',
+            disabled=not all_valid,
+            use_container_width=True,
+            key='sk_generate_btn',
+        )
+
+    # -----------------------------------------------------------------------
+    # PROCESSING
+    # -----------------------------------------------------------------------
+
+    sk_state = 'sk_processed'
+
+    if generate and all_valid:
+        with st.spinner('Processing files...'):
+            try:
+                machines_dfs, events_dfs = [], []
+                for f in machine_files:
+                    xl = pd.ExcelFile(f)
+                    sheet = 'Exported Machines' if 'Exported Machines' in xl.sheet_names \
+                            else xl.sheet_names[0]
+                    machines_dfs.append(
+                        pd.read_excel(f, sheet_name=sheet, dtype={'Machine ID': str})
+                    )
+                for f in event_files:
+                    xl = pd.ExcelFile(f)
+                    sheet = 'Exported Case Events' if 'Exported Case Events' in xl.sheet_names \
+                            else xl.sheet_names[0]
+                    events_dfs.append(
+                        pd.read_excel(f, sheet_name=sheet, dtype={'Machine ID': str})
+                    )
+
+                rows, globals_data = run_processing(
+                    machines_dfs=machines_dfs,
+                    events_dfs=events_dfs,
+                    primary_domain=primary_domain.strip(),
+                    additional_domains=extra_domains_valid,
+                    country=selected_country,
+                )
+
+                template_wb = openpyxl.load_workbook(template_file, keep_links=True)
+                filled_wb, template_type = fill_template(
+                    template_wb, rows, globals_data,
+                    case_ids_valid, entity_name.strip(), selected_country,
+                )
+
+                safe_entity = ''.join(
+                    c for c in entity_name.strip()
+                    if c.isalnum() or c in ' ._-'
+                ).strip()
+                filename = f'{safe_entity} - Evidence Report.xlsx'
+
+                buf = io.BytesIO()
+                patch_and_save(filled_wb, buf)
+                buf.seek(0)
+
+                st.session_state[sk_state]           = True
+                st.session_state['sk_result_rows']    = rows
+                st.session_state['sk_result_globals'] = globals_data
+                st.session_state['sk_result_type']    = template_type
+                st.session_state['sk_result_filename'] = filename
+                st.session_state['sk_result_buffer']  = buf.read()
+
+                st.markdown(
+                    '<div class="alert alert-success">✓ Processing complete.</div>',
+                    unsafe_allow_html=True,
+                )
+
+            except Exception as e:
+                st.markdown(
+                    f'<div class="alert alert-error">✗ Error: {e}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.text(traceback.format_exc())
+
+    # -----------------------------------------------------------------------
+    # RESULTS
+    # -----------------------------------------------------------------------
+
+    if st.session_state.get(sk_state):
+        rows         = st.session_state['sk_result_rows']
+        globals_data = st.session_state['sk_result_globals']
+        template_type = st.session_state['sk_result_type']
+        filename     = st.session_state['sk_result_filename']
+        buffer       = st.session_state['sk_result_buffer']
+
+        st.markdown('<div class="section-label">08 · Results</div>',
+                    unsafe_allow_html=True)
+
+        excluded_count = sum(1 for r in rows if r.get('is_excluded'))
+        valid_count    = len(rows) - excluded_count
+
+        st.markdown(f"""
+        <div class="result-grid">
+            <div class="metric-box">
+                <div class="metric-val">{globals_data['total_machines']}</div>
+                <div class="metric-lbl">Valid Machines</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-val">{globals_data['total_licenses']}</div>
+                <div class="metric-lbl">Total Licenses</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-val">{globals_data['total_events']}</div>
+                <div class="metric-lbl">Valid Events</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-val">{globals_data['years_of_use']}</div>
+                <div class="metric-lbl">Years of Use</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div class="result-card" style="margin-top:1rem;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <div style="font-family:var(--mono); font-size:0.7rem; color:var(--text-muted); letter-spacing:0.1em; text-transform:uppercase;">Period</div>
+                    <div style="font-size:1rem; font-weight:600; margin-top:0.25rem;">{globals_data['period']}</div>
+                </div>
+                <div>
+                    <div style="font-family:var(--mono); font-size:0.7rem; color:var(--text-muted); letter-spacing:0.1em; text-transform:uppercase;">Versions</div>
+                    <div style="font-family:var(--mono); font-size:0.85rem; margin-top:0.25rem;">{globals_data['versions_str']}</div>
+                </div>
+                <div>
+                    <div style="font-family:var(--mono); font-size:0.7rem; color:var(--text-muted); letter-spacing:0.1em; text-transform:uppercase;">Template</div>
+                    <span class="region-badge {'region-mcc' if template_type == 'MCC' else 'region-cs'}">{template_type}</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if excluded_count > 0:
+            st.markdown(
+                f'<div class="alert alert-warn">⚠ {excluded_count} machine group(s) '
+                f'fully excluded (Education / Commercial / Evaluation only)</div>',
+                unsafe_allow_html=True,
+            )
+
+        with st.expander('View machine rows preview', expanded=False):
+            preview_data = [{
+                'MAC':        r['active_mac'],
+                'Product':    r['product'],
+                'Licenses':   r['license_count'],
+                'Version':    r['version'],
+                'Event Type': r['event_type'],
+                'First Event': str(r['first_event']) if r['first_event'] else '-',
+                'Last Event':  str(r['last_event'])  if r['last_event']  else '-',
+                'Country':    r['ip_country'],
+                'Email':      r['client_email'],
+                'Excluded':   '🔴' if r.get('is_excluded') else '✅',
+            } for r in rows]
+            st.dataframe(pd.DataFrame(preview_data),
+                         use_container_width=True, hide_index=True)
+
+        st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+
+        dl_col, _ = st.columns([1, 2])
+        with dl_col:
+            st.download_button(
+                label=f'⬇ Download {filename}',
+                data=buffer,
+                file_name=filename,
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                use_container_width=True,
+                key='sk_download_btn',
+            )
+
+        st.markdown(
+            '<div class="alert alert-success" style="margin-top:0.75rem;">'
+            '✓ Report generated successfully. Download and verify the output '
+            'before sharing.</div>',
+            unsafe_allow_html=True,
+        )
