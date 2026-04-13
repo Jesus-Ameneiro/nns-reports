@@ -245,7 +245,12 @@ def render():
 
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
-    gen_col, _ = st.columns([1, 2])
+    def _clear_sk_state():
+        """Remove every sk_* key including dynamic cid/dom widget keys."""
+        for k in [k for k in st.session_state if k.startswith('sk_')]:
+            del st.session_state[k]
+
+    gen_col, clear_col, _ = st.columns([2, 1, 2])
     with gen_col:
         generate = st.button(
             '⚡ Generate Evidence Report',
@@ -253,6 +258,16 @@ def render():
             use_container_width=True,
             key='sk_generate_btn',
         )
+    with clear_col:
+        if st.button(
+            '🗑 Clear Data',
+            use_container_width=True,
+            key='sk_clear_btn',
+            type='secondary',
+            help='Reset all fields and uploaded files',
+        ):
+            _clear_sk_state()
+            st.rerun()
 
     # -----------------------------------------------------------------------
     # PROCESSING
@@ -333,8 +348,20 @@ def render():
         filename     = st.session_state['sk_result_filename']
         buffer       = st.session_state['sk_result_buffer']
 
-        st.markdown('<div class="section-label">08 · Results</div>',
-                    unsafe_allow_html=True)
+        res_label_col, res_clear_col = st.columns([3, 1])
+        with res_label_col:
+            st.markdown('<div class="section-label">08 · Results</div>',
+                        unsafe_allow_html=True)
+        with res_clear_col:
+            if st.button(
+                '🗑 Clear & Start Over',
+                use_container_width=True,
+                key='sk_clear_results_btn',
+                type='secondary',
+                help='Clear all data and generate a new report',
+            ):
+                _clear_sk_state()
+                st.rerun()
 
         excluded_count = sum(1 for r in rows if r.get('is_excluded'))
         valid_count    = len(rows) - excluded_count
