@@ -111,7 +111,7 @@ def clean_version(v):
             return str(2000 + n)
     except (ValueError, OverflowError):
         pass
-    return s if s else None
+    return None  # non-numeric string — not a valid version year
 
 
 def is_excluded_type(event_type):
