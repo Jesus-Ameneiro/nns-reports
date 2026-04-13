@@ -248,6 +248,21 @@ h1, h2, h3, h4 { font-family: var(--sans); font-weight: 800; color: var(--text);
     box-shadow: 0 4px 20px rgba(79,142,247,0.3) !important;
 }
 
+/* Secondary / Clear buttons */
+[data-testid="stButton"] button[kind="secondary"] {
+    background: transparent !important;
+    color: var(--text-muted) !important;
+    border: 1px solid var(--border) !important;
+    font-weight: 600 !important;
+}
+[data-testid="stButton"] button[kind="secondary"]:hover {
+    background: var(--surface2) !important;
+    color: var(--text) !important;
+    border-color: var(--danger) !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
 /* Download button */
 [data-testid="stDownloadButton"] button {
     background: linear-gradient(135deg, var(--success), #16a34a) !important;
