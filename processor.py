@@ -73,7 +73,37 @@ def domain_match(email, domains):
     return False
 
 
-def select_email(client_emails, additional_emails, all_domains):
+def select_email(client_emails, additional_emails, all_domains,
+                 names=None,
+                 latest_client=None, latest_add=None):
+    """
+    Priority order:
+    1. Client email whose local-part matches a known hostname or username.
+    2. Additional email whose local-part matches a known hostname or username.
+    3. Domain-matching email from the most recent event (client first).
+    4. First domain-matching email in the combined list (original fallback).
+    """
+    names = {n.lower().strip() for n in (names or []) if n and n.strip()}
+
+    def local(email):
+        """Return the local part (before @) of an email, lowercased."""
+        return email.lower().split('@')[0] if '@' in email else ''
+
+    # Priority 1 & 2: name match in client, then additional
+    if names:
+        for email in client_emails:
+            if domain_match(email, all_domains) and local(email) in names:
+                return email
+        for email in additional_emails:
+            if domain_match(email, all_domains) and local(email) in names:
+                return email
+
+    # Priority 3: most recent event's domain-matching email
+    for email in filter(None, [latest_client, latest_add]):
+        if domain_match(email, all_domains):
+            return email
+
+    # Priority 4: first domain-matching email (original fallback)
     for email in client_emails:
         if domain_match(email, all_domains):
             return email
@@ -111,7 +141,7 @@ def clean_version(v):
             return str(2000 + n)
     except (ValueError, OverflowError):
         pass
-    return s if s else None
+    return None  # non-numeric string — not a valid version year
 
 
 def is_excluded_type(event_type):
@@ -256,9 +286,12 @@ def process_case_events(events_df):
                 'total_events':       0,
                 'excluded_count':     0,
                 'last_excluded_type': '',
-                'client_emails_ev':   [],
-                'add_emails_ev':      [],
-                'active_macs_ev':     defaultdict(int),
+                'client_emails_ev':       [],
+                'add_emails_ev':          [],
+                'latest_client_email_ev': None,   # email from most recent event
+                'latest_add_email_ev':    None,   # email from most recent event
+                'latest_email_date':      None,   # timestamp of that event
+                'active_macs_ev':         defaultdict(int),
             }
 
         m = machines[mid]
@@ -302,6 +335,20 @@ def process_case_events(events_df):
         for e in add_emails_ev:
             if '=' not in e and len(e) < 100 and e not in m['add_emails_ev']:
                 m['add_emails_ev'].append(e)
+
+        # Track which email came from the most recent event (for fallback)
+        if current_date and (m['latest_email_date'] is None
+                             or current_date >= m['latest_email_date']):
+            ce_valid = next((e for e in client_emails_ev
+                             if '=' not in e and len(e) < 100), None)
+            ae_valid = next((e for e in add_emails_ev
+                             if '=' not in e and len(e) < 100), None)
+            if ce_valid or ae_valid:
+                m['latest_email_date'] = current_date
+                if ce_valid:
+                    m['latest_client_email_ev'] = ce_valid
+                if ae_valid:
+                    m['latest_add_email_ev'] = ae_valid
 
         if active_mac_ev and len(active_mac_ev) == 17:
             m['active_macs_ev'][active_mac_ev] += 1
@@ -365,7 +412,15 @@ def enrich_with_machines(machines, machines_df, all_domains):
         all_client     = client_emails_mf + [e for e in m['client_emails_ev'] if e not in client_emails_mf]
         all_additional = add_emails_mf    + [e for e in m['add_emails_ev']    if e not in add_emails_mf]
 
-        m['selected_email'] = select_email(all_client, all_additional, all_domains)
+        # Pass hostnames + usernames as name candidates, and latest emails
+        # from events so the new priority logic can use them.
+        all_names = m['hostnames'] | m['usernames']
+        m['selected_email'] = select_email(
+            all_client, all_additional, all_domains,
+            names=all_names,
+            latest_client=m.get('latest_client_email_ev'),
+            latest_add=m.get('latest_add_email_ev'),
+        )
 
     return machines
 
