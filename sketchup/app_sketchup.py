@@ -43,12 +43,112 @@ def _all_countries(config):
     return sorted(countries)
 
 
+def _tip(text: str) -> str:
+    """
+    Return an HTML ❓ badge with a CSS tooltip that appears on hover.
+    Inject the _TOOLTIP_CSS block once per render (idempotent via st.markdown).
+    """
+    # Escape single quotes inside the tooltip text
+    safe = text.replace("'", "&#39;").replace('"', '&quot;')
+    return (
+        f'<span class="tip-wrap">'
+        f'<span class="tip-badge">?</span>'
+        f'<span class="tip-box">{safe}</span>'
+        f'</span>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# TOOLTIP CSS  (injected once inside render())
+# ---------------------------------------------------------------------------
+
+_TOOLTIP_CSS = """
+<style>
+.tip-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0.4rem;
+    vertical-align: middle;
+}
+.tip-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: rgba(249,115,22,0.15);
+    border: 1px solid rgba(249,115,22,0.5);
+    color: #f97316;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    cursor: default;
+    user-select: none;
+    flex-shrink: 0;
+}
+.tip-box {
+    visibility: hidden;
+    opacity: 0;
+    position: absolute;
+    left: 22px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: #1a1a1a;
+    border: 1px solid rgba(249,115,22,0.35);
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    width: 240px;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    color: #d4d4d4;
+    line-height: 1.5;
+    z-index: 9999;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    white-space: normal;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+.tip-wrap:hover .tip-box {
+    visibility: visible;
+    opacity: 1;
+}
+</style>
+"""
+
+# ---------------------------------------------------------------------------
+# LABEL HELPERS  — section label + inline tip badge rendered together
+# ---------------------------------------------------------------------------
+
+def _label(text: str, tip: str = '', style: str = '') -> None:
+    """Render a section-label div with an optional inline tip badge."""
+    style_attr = f' style="{style}"' if style else ''
+    tip_html   = _tip(tip) if tip else ''
+    st.markdown(
+        f'<div class="section-label"{style_attr}>{text}{tip_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _sublabel(text: str, tip: str = '') -> None:
+    """Render a sub-label with an optional inline tip badge."""
+    tip_html = _tip(tip) if tip else ''
+    st.markdown(
+        f'<div class="sub-label">{text}{tip_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # MAIN RENDER FUNCTION
 # ---------------------------------------------------------------------------
 
 def render():
     """Render the full SketchUp Evidence Report Generator UI inside its tab."""
+
+    # Inject tooltip CSS once per render
+    st.markdown(_TOOLTIP_CSS, unsafe_allow_html=True)
 
     config         = _load_config()
     countries_list = _all_countries(config)
@@ -66,20 +166,24 @@ def render():
     with left_col:
 
         # --- CASE INFORMATION ---
-        st.markdown('<div class="section-label">01 · Case Information</div>',
-                    unsafe_allow_html=True)
+        _label('01 · Case Information')
 
         entity_name = st.text_input(
             'Entity / Organization Name',
             placeholder='e.g. Acme Corp S.A.',
             key='sk_entity_name',
+            help='Full legal name of the company or organization being investigated.',
         )
 
         # Dynamic Case ID list
         if 'sk_case_ids' not in st.session_state:
             st.session_state['sk_case_ids'] = ['']
 
-        st.markdown('<div class="sub-label">Case ID(s)</div>', unsafe_allow_html=True)
+        _sublabel(
+            'Case ID(s)',
+            tip='The Pleteo case identifier(s) for this investigation, e.g. 1234567#1. '
+                'Add one ID per line. Use ＋ to add more.',
+        )
         for i, cid in enumerate(st.session_state['sk_case_ids']):
             c1, c2, c3 = st.columns([6, 1, 1])
             with c1:
@@ -105,8 +209,12 @@ def render():
                           if c.strip()]
 
         # --- COUNTRY & REGION ---
-        st.markdown('<div class="section-label" style="margin-top:1.5rem;">'
-                    '02 · Country & Region</div>', unsafe_allow_html=True)
+        _label(
+            '02 · Country & Region',
+            tip='Country where the entity operates. Determines the report region '
+                '(MCC or Cono Sur) and is used to validate IP Country in the event data.',
+            style='margin-top:1.5rem;',
+        )
 
         selected_country = st.selectbox(
             'Country',
@@ -126,21 +234,34 @@ def render():
             )
 
         # --- DOMAIN INFORMATION ---
-        st.markdown('<div class="section-label" style="margin-top:1.5rem;">'
-                    '03 · Domain Information</div>', unsafe_allow_html=True)
+        _label(
+            '03 · Domain Information',
+            tip='Add every domain associated with this entity: '
+                'email domain, web domain, computer/AD domain, and any subsidiary domains. '
+                'These are used to filter and match machines, emails, and computer domains in the report. '
+                'Enter the primary domain below, then press ＋ to add each additional domain.',
+            style='margin-top:1.5rem;',
+        )
 
         primary_domain = st.text_input(
             'Primary Domain',
             placeholder='e.g. company.com',
             key='sk_primary_domain',
+            help='The main domain of the entity (e.g. company.com). '
+                 'This is used to match email addresses, computer domains, '
+                 'and filter out unrelated machines.',
         )
 
         if 'sk_extra_domains' not in st.session_state:
             st.session_state['sk_extra_domains'] = []
 
         if st.session_state['sk_extra_domains']:
-            st.markdown('<div class="sub-label">Additional Domains</div>',
-                        unsafe_allow_html=True)
+            _sublabel(
+                'Additional Domains',
+                tip='Any other domain belonging to this entity: subsidiaries, '
+                    'regional offices, email aliases, or Active Directory domains. '
+                    'Press ＋ to add as many as needed.',
+            )
         for i, dom in enumerate(st.session_state['sk_extra_domains']):
             c1, c2 = st.columns([7, 1])
             with c1:
@@ -169,8 +290,12 @@ def render():
     with right_col:
 
         # --- MACHINE FILES ---
-        st.markdown('<div class="section-label">04 · Machine Files</div>',
-                    unsafe_allow_html=True)
+        _label(
+            '04 · Machine Files',
+            tip='Export from Pleteo: the "Exported Machines" sheet. '
+                'One or more .xlsx files are accepted — upload all files '
+                'belonging to this case.',
+        )
         machine_files = st.file_uploader(
             'Upload exported machine file(s)',
             type=['xlsx'],
@@ -185,8 +310,13 @@ def render():
                 )
 
         # --- CASE EVENT FILES ---
-        st.markdown('<div class="section-label" style="margin-top:1.5rem;">'
-                    '05 · Case Event Files</div>', unsafe_allow_html=True)
+        _label(
+            '05 · Case Event Files',
+            tip='Export from Pleteo: the "Exported Case Events" sheet. '
+                'One or more .xlsx files are accepted — upload all event files '
+                'for this case. Must correspond to the same machines uploaded above.',
+            style='margin-top:1.5rem;',
+        )
         event_files = st.file_uploader(
             'Upload exported case event file(s)',
             type=['xlsx'],
@@ -201,8 +331,14 @@ def render():
                 )
 
         # --- TEMPLATE FILE ---
-        st.markdown('<div class="section-label" style="margin-top:1.5rem;">'
-                    '06 · Template File</div>', unsafe_allow_html=True)
+        _label(
+            '06 · Template File',
+            tip='The official NNS Evidence Report .xlsx template for this case. '
+                'Use the MCC template for México Central Caribe, '
+                'or the corresponding Cono Sur template (Q1, Argentina, or Paraguay). '
+                'The report type is detected automatically.',
+            style='margin-top:1.5rem;',
+        )
         template_file = st.file_uploader(
             'Upload the Evidence Report template',
             type=['xlsx'],
@@ -246,9 +382,33 @@ def render():
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
     def _clear_sk_state():
-        """Remove every sk_* key including dynamic cid/dom widget keys."""
-        for k in [k for k in st.session_state if k.startswith('sk_')]:
+        """
+        Full soft reset: explicitly set static widget keys back to their
+        default values so Streamlit renders them empty on the next run.
+        File uploader keys must be deleted (no API to clear them programmatically).
+        Dynamic per-row keys (sk_cid_N, sk_dom_N) must also be deleted since
+        they are recreated from the list length on each render.
+        """
+        # ── Static input widgets: set to default ────────────────────────────
+        st.session_state['sk_entity_name']    = ''
+        st.session_state['sk_primary_domain'] = ''
+        st.session_state['sk_case_ids']       = ['']   # single empty row
+        st.session_state['sk_extra_domains']  = []     # no extra domains
+        st.session_state['sk_country']        = ''     # first (blank) option
+
+        # ── File uploaders: delete key → Streamlit re-creates them empty ────
+        for key in ('sk_machine_files', 'sk_event_files', 'sk_template_file'):
+            st.session_state.pop(key, None)
+
+        # ── Dynamic per-row widget keys ──────────────────────────────────────
+        for k in [k for k in st.session_state
+                  if k.startswith('sk_cid_') or k.startswith('sk_dom_')]:
             del st.session_state[k]
+
+        # ── Results ──────────────────────────────────────────────────────────
+        for key in ('sk_processed', 'sk_result_rows', 'sk_result_globals',
+                    'sk_result_type', 'sk_result_filename', 'sk_result_buffer'):
+            st.session_state.pop(key, None)
 
     gen_col, clear_col, _ = st.columns([2, 1, 2])
     with gen_col:
