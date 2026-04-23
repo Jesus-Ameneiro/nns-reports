@@ -6,6 +6,7 @@ This module exposes a single function:  render()
 Called by the root app.py inside the SketchUp tab.
 """
 
+import base64
 import io
 import json
 import openpyxl
@@ -141,6 +142,45 @@ def _sublabel(text: str, tip: str = '') -> None:
 
 
 # ---------------------------------------------------------------------------
+# USER MANUAL BUTTON
+# ---------------------------------------------------------------------------
+
+_MANUAL_PATH = Path(__file__).parent.parent / 'docs' / 'user_manual.pdf'
+
+
+def _manual_button() -> None:
+    """
+    Render a small HTML link that opens the PDF user manual in a new tab.
+    The PDF is read from the repo at docs/user_manual.pdf, encoded as a
+    base64 data URI, and opened via an <a target="_blank"> tag — the only
+    reliable way to open a file in a new tab from Streamlit.
+    """
+    if not _MANUAL_PATH.exists():
+        return
+    b64 = base64.b64encode(_MANUAL_PATH.read_bytes()).decode()
+    href = (
+        f'data:application/pdf;base64,{b64}'
+    )
+    st.markdown(
+        f'''<a href="{href}" target="_blank" style="
+            display:inline-flex; align-items:center; gap:0.4rem;
+            font-family:'DM Mono', monospace; font-size:0.75rem;
+            color:var(--text-muted); text-decoration:none;
+            padding:0.3rem 0.7rem;
+            border:1px solid var(--border);
+            border-radius:6px;
+            background:var(--surface2);
+            transition:all 0.15s;
+        "
+        onmouseover="this.style.borderColor='#f97316';this.style.color='#f97316';"
+        onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)';">
+            📖 User Manual
+        </a>''',
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # MAIN RENDER FUNCTION
 # ---------------------------------------------------------------------------
 
@@ -149,6 +189,11 @@ def render():
 
     # Inject tooltip CSS once per render
     st.markdown(_TOOLTIP_CSS, unsafe_allow_html=True)
+
+    # User manual link — top right area
+    _, manual_col = st.columns([5, 1])
+    with manual_col:
+        _manual_button()
 
     config         = _load_config()
     countries_list = _all_countries(config)
