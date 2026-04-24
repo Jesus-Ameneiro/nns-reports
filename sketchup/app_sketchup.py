@@ -44,11 +44,6 @@ def _all_countries(config):
 
 
 def _tip(text: str) -> str:
-    """
-    Return an HTML ❓ badge with a CSS tooltip that appears on hover.
-    Inject the _TOOLTIP_CSS block once per render (idempotent via st.markdown).
-    """
-    # Escape single quotes inside the tooltip text
     safe = text.replace("'", "&#39;").replace('"', '&quot;')
     return (
         f'<span class="tip-wrap">'
@@ -59,7 +54,7 @@ def _tip(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# TOOLTIP CSS  (injected once inside render())
+# TOOLTIP CSS
 # ---------------------------------------------------------------------------
 
 _TOOLTIP_CSS = """
@@ -118,11 +113,10 @@ _TOOLTIP_CSS = """
 """
 
 # ---------------------------------------------------------------------------
-# LABEL HELPERS  — section label + inline tip badge rendered together
+# LABEL HELPERS
 # ---------------------------------------------------------------------------
 
 def _label(text: str, tip: str = '', style: str = '') -> None:
-    """Render a section-label div with an optional inline tip badge."""
     style_attr = f' style="{style}"' if style else ''
     tip_html   = _tip(tip) if tip else ''
     st.markdown(
@@ -132,7 +126,6 @@ def _label(text: str, tip: str = '', style: str = '') -> None:
 
 
 def _sublabel(text: str, tip: str = '') -> None:
-    """Render a sub-label with an optional inline tip badge."""
     tip_html = _tip(tip) if tip else ''
     st.markdown(
         f'<div class="sub-label">{text}{tip_html}</div>',
@@ -145,17 +138,6 @@ def _sublabel(text: str, tip: str = '') -> None:
 # ---------------------------------------------------------------------------
 
 def _manual_button() -> None:
-    """
-    Render a '📖 User Manual' link that opens the PDF in a new browser tab.
-
-    Approach: Streamlit static file serving.
-    - The PDF lives at static/user_manual.pdf (repo root/static/).
-    - Streamlit serves files in that folder at /static/<filename> when
-      enableStaticServing = true in .streamlit/config.toml.
-    - A plain <a href="/static/user_manual.pdf" target="_blank"> opens it
-      natively in the browser without any data-URI encoding — which modern
-      browsers (Chrome 60+, Edge) block for PDF navigation.
-    """
     st.markdown(
         '''<a href="/static/user_manual.pdf" target="_blank" style="
             display:inline-flex; align-items:center; gap:0.4rem;
@@ -182,22 +164,30 @@ def _manual_button() -> None:
 def render():
     """Render the full SketchUp Evidence Report Generator UI inside its tab."""
 
-    # ── Handle pending clear request ────────────────────────────────────────
-    # Must run BEFORE any widget is instantiated to avoid the Streamlit
-    # "cannot modify after widget is instantiated" exception.
-    if st.session_state.pop('sk_clear_pending', False):
-        for k in [k for k in list(st.session_state.keys())
-                  if k.startswith('sk_')]:
-            del st.session_state[k]
-        # Set list/dropdown defaults so widgets render empty on this run
-        st.session_state['sk_case_ids']      = ['']
-        st.session_state['sk_extra_domains'] = []
-        st.session_state['sk_country']       = ''
+    # ── Counter-based reset ─────────────────────────────────────────────────
+    # Every widget key includes _count.  When Clear is pressed, _count
+    # increments → Streamlit sees entirely new widget keys → renders all
+    # widgets fresh, including file uploaders which cannot be reset any
+    # other way.
+    _count = st.session_state.get('sk_clear_count', 0)
 
-    # Inject tooltip CSS once per render
+    def _clear():
+        """
+        Increment the clear counter and wipe all other sk_* state.
+        Because every widget key embeds _count, the next render creates
+        brand-new widgets with no previous values — equivalent to a full
+        page refresh, but without losing the tab context.
+        """
+        c = st.session_state.get('sk_clear_count', 0)
+        for k in [k for k in list(st.session_state.keys())
+                  if k.startswith('sk_') and k != 'sk_clear_count']:
+            del st.session_state[k]
+        st.session_state['sk_clear_count'] = c + 1
+
+    # Inject tooltip CSS
     st.markdown(_TOOLTIP_CSS, unsafe_allow_html=True)
 
-    # User manual link — top right area
+    # User manual link — top right
     _, manual_col = st.columns([5, 1])
     with manual_col:
         _manual_button()
@@ -206,61 +196,62 @@ def render():
     countries_list = _all_countries(config)
 
     # -----------------------------------------------------------------------
-    # LAYOUT: Two columns — inputs left, files right
+    # LAYOUT
     # -----------------------------------------------------------------------
 
     left_col, right_col = st.columns([1, 1], gap='large')
 
     # =======================================================================
-    # LEFT COLUMN — Case Information
+    # LEFT COLUMN
     # =======================================================================
 
     with left_col:
 
-        # --- CASE INFORMATION ---
+        # --- 01 · Case Information ---
         _label('01 · Case Information')
 
         entity_name = st.text_input(
             'Entity / Organization Name',
             placeholder='e.g. Acme Corp S.A.',
-            key='sk_entity_name',
+            key=f'sk_entity_name_{_count}',
             help='Full legal name of the company or organization being investigated.',
         )
 
-        # Dynamic Case ID list
-        if 'sk_case_ids' not in st.session_state:
-            st.session_state['sk_case_ids'] = ['']
+        # Dynamic Case ID rows
+        _cids_key = f'sk_case_ids_{_count}'
+        if _cids_key not in st.session_state:
+            st.session_state[_cids_key] = ['']
 
         _sublabel(
             'Case ID(s)',
             tip='The Pleteo case identifier(s) for this investigation, e.g. 1234567#1. '
                 'Add one ID per line. Use ＋ to add more.',
         )
-        for i, cid in enumerate(st.session_state['sk_case_ids']):
+        for i, cid in enumerate(st.session_state[_cids_key]):
             c1, c2, c3 = st.columns([6, 1, 1])
             with c1:
-                st.session_state['sk_case_ids'][i] = st.text_input(
+                st.session_state[_cids_key][i] = st.text_input(
                     f'Case ID {i+1}', value=cid,
                     label_visibility='collapsed',
                     placeholder='e.g. 1234567#1',
-                    key=f'sk_cid_{i}',
+                    key=f'sk_cid_{i}_{_count}',
                 )
             with c2:
-                if st.button('＋', key=f'sk_add_case_{i}',
+                if st.button('＋', key=f'sk_add_case_{i}_{_count}',
                              help='Add another Case ID'):
-                    st.session_state['sk_case_ids'].append('')
+                    st.session_state[_cids_key].append('')
                     st.rerun()
             with c3:
-                if len(st.session_state['sk_case_ids']) > 1:
-                    if st.button('✕', key=f'sk_rem_case_{i}',
+                if len(st.session_state[_cids_key]) > 1:
+                    if st.button('✕', key=f'sk_rem_case_{i}_{_count}',
                                  help='Remove'):
-                        st.session_state['sk_case_ids'].pop(i)
+                        st.session_state[_cids_key].pop(i)
                         st.rerun()
 
-        case_ids_valid = [c.strip() for c in st.session_state['sk_case_ids']
+        case_ids_valid = [c.strip() for c in st.session_state[_cids_key]
                           if c.strip()]
 
-        # --- COUNTRY & REGION ---
+        # --- 02 · Country & Region ---
         _label(
             '02 · Country & Region',
             tip='Country where the entity operates. Determines the report region '
@@ -271,7 +262,7 @@ def render():
         selected_country = st.selectbox(
             'Country',
             options=[''] + countries_list,
-            key='sk_country',
+            key=f'sk_country_{_count}',
         )
 
         selected_region = None
@@ -285,7 +276,7 @@ def render():
                 unsafe_allow_html=True,
             )
 
-        # --- DOMAIN INFORMATION ---
+        # --- 03 · Domain Information ---
         _label(
             '03 · Domain Information',
             tip='Add every domain associated with this entity: '
@@ -298,50 +289,51 @@ def render():
         primary_domain = st.text_input(
             'Primary Domain',
             placeholder='e.g. company.com',
-            key='sk_primary_domain',
+            key=f'sk_primary_domain_{_count}',
             help='The main domain of the entity (e.g. company.com). '
                  'This is used to match email addresses, computer domains, '
                  'and filter out unrelated machines.',
         )
 
-        if 'sk_extra_domains' not in st.session_state:
-            st.session_state['sk_extra_domains'] = []
+        _doms_key = f'sk_extra_domains_{_count}'
+        if _doms_key not in st.session_state:
+            st.session_state[_doms_key] = []
 
-        if st.session_state['sk_extra_domains']:
+        if st.session_state[_doms_key]:
             _sublabel(
                 'Additional Domains',
                 tip='Any other domain belonging to this entity: subsidiaries, '
                     'regional offices, email aliases, or Active Directory domains. '
                     'Press ＋ to add as many as needed.',
             )
-        for i, dom in enumerate(st.session_state['sk_extra_domains']):
+        for i, dom in enumerate(st.session_state[_doms_key]):
             c1, c2 = st.columns([7, 1])
             with c1:
-                st.session_state['sk_extra_domains'][i] = st.text_input(
+                st.session_state[_doms_key][i] = st.text_input(
                     f'Domain {i+1}', value=dom,
                     label_visibility='collapsed',
                     placeholder='e.g. subsidiary.com',
-                    key=f'sk_dom_{i}',
+                    key=f'sk_dom_{i}_{_count}',
                 )
             with c2:
-                if st.button('✕', key=f'sk_rem_dom_{i}', help='Remove'):
-                    st.session_state['sk_extra_domains'].pop(i)
+                if st.button('✕', key=f'sk_rem_dom_{i}_{_count}', help='Remove'):
+                    st.session_state[_doms_key].pop(i)
                     st.rerun()
 
-        if st.button('＋ Add domain', key='sk_add_dom'):
-            st.session_state['sk_extra_domains'].append('')
+        if st.button('＋ Add domain', key=f'sk_add_dom_{_count}'):
+            st.session_state[_doms_key].append('')
             st.rerun()
 
-        extra_domains_valid = [d.strip() for d in st.session_state['sk_extra_domains']
+        extra_domains_valid = [d.strip() for d in st.session_state[_doms_key]
                                if d.strip()]
 
     # =======================================================================
-    # RIGHT COLUMN — File Uploads
+    # RIGHT COLUMN
     # =======================================================================
 
     with right_col:
 
-        # --- MACHINE FILES ---
+        # --- 04 · Machine Files ---
         _label(
             '04 · Machine Files',
             tip='Export from Pleteo: the "Exported Machines" sheet. '
@@ -352,7 +344,7 @@ def render():
             'Upload exported machine file(s)',
             type=['xlsx'],
             accept_multiple_files=True,
-            key='sk_machine_files',
+            key=f'sk_machine_files_{_count}',
         )
         if machine_files:
             for f in machine_files:
@@ -361,7 +353,7 @@ def render():
                     unsafe_allow_html=True,
                 )
 
-        # --- CASE EVENT FILES ---
+        # --- 05 · Case Event Files ---
         _label(
             '05 · Case Event Files',
             tip='Export from Pleteo: the "Exported Case Events" sheet. '
@@ -373,7 +365,7 @@ def render():
             'Upload exported case event file(s)',
             type=['xlsx'],
             accept_multiple_files=True,
-            key='sk_event_files',
+            key=f'sk_event_files_{_count}',
         )
         if event_files:
             for f in event_files:
@@ -382,7 +374,7 @@ def render():
                     unsafe_allow_html=True,
                 )
 
-        # --- TEMPLATE FILE ---
+        # --- 06 · Template File ---
         _label(
             '06 · Template File',
             tip='The official NNS Evidence Report .xlsx template for this case. '
@@ -394,7 +386,7 @@ def render():
         template_file = st.file_uploader(
             'Upload the Evidence Report template',
             type=['xlsx'],
-            key='sk_template_file',
+            key=f'sk_template_file_{_count}',
         )
         if template_file:
             st.markdown(
@@ -403,7 +395,7 @@ def render():
             )
 
     # -----------------------------------------------------------------------
-    # VALIDATION & GENERATE
+    # VALIDATION
     # -----------------------------------------------------------------------
 
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
@@ -433,15 +425,9 @@ def render():
 
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
-    def _clear_sk_state():
-        """
-        Request a full reset by setting a flag, then rerun.
-        The actual deletion happens at the TOP of render() on the next run,
-        BEFORE any widgets are instantiated — Streamlit forbids modifying
-        a widget's session state key after it has already been rendered in
-        the same script execution.
-        """
-        st.session_state['sk_clear_pending'] = True
+    # -----------------------------------------------------------------------
+    # GENERATE + CLEAR  (single clear button, here only)
+    # -----------------------------------------------------------------------
 
     gen_col, clear_col, _ = st.columns([2, 1, 2])
     with gen_col:
@@ -449,24 +435,24 @@ def render():
             '⚡ Generate Evidence Report',
             disabled=not all_valid,
             use_container_width=True,
-            key='sk_generate_btn',
+            key=f'sk_generate_btn_{_count}',
         )
     with clear_col:
         if st.button(
             '🗑 Clear Data',
             use_container_width=True,
-            key='sk_clear_btn',
+            key='sk_clear_btn',       # no counter — always present
             type='secondary',
-            help='Reset all fields and uploaded files',
+            help='Clear all inputs, files and results — same as a page refresh',
         ):
-            _clear_sk_state()
+            _clear()
             st.rerun()
 
     # -----------------------------------------------------------------------
     # PROCESSING
     # -----------------------------------------------------------------------
 
-    sk_state = 'sk_processed'
+    _processed_key = f'sk_processed_{_count}'
 
     if generate and all_valid:
         with st.spinner('Processing files...'):
@@ -495,10 +481,18 @@ def render():
                     country=selected_country,
                 )
 
-                template_wb = openpyxl.load_workbook(template_file, keep_links=True)
+                # Read raw bytes BEFORE loading — openpyxl closes the ZIP
+                # on load, making it impossible to extract rich-value images
+                # later.  We pass raw_bytes to fill_template so it can extract
+                # all vm= cell images (logos, footer graphics) and re-insert
+                # them as standard floating drawings in the output.
+                _tmpl_raw  = template_file.read()
+                template_wb = openpyxl.load_workbook(
+                    io.BytesIO(_tmpl_raw), keep_links=True)
                 filled_wb, template_type = fill_template(
                     template_wb, rows, globals_data,
                     case_ids_valid, entity_name.strip(), selected_country,
+                    raw_bytes=_tmpl_raw,
                 )
 
                 safe_entity = ''.join(
@@ -511,12 +505,12 @@ def render():
                 patch_and_save(filled_wb, buf)
                 buf.seek(0)
 
-                st.session_state[sk_state]           = True
-                st.session_state['sk_result_rows']    = rows
-                st.session_state['sk_result_globals'] = globals_data
-                st.session_state['sk_result_type']    = template_type
-                st.session_state['sk_result_filename'] = filename
-                st.session_state['sk_result_buffer']  = buf.read()
+                st.session_state[_processed_key]          = True
+                st.session_state[f'sk_result_rows_{_count}']    = rows
+                st.session_state[f'sk_result_globals_{_count}'] = globals_data
+                st.session_state[f'sk_result_type_{_count}']    = template_type
+                st.session_state[f'sk_result_filename_{_count}'] = filename
+                st.session_state[f'sk_result_buffer_{_count}']  = buf.read()
 
                 st.markdown(
                     '<div class="alert alert-success">✓ Processing complete.</div>',
@@ -534,30 +528,17 @@ def render():
     # RESULTS
     # -----------------------------------------------------------------------
 
-    if st.session_state.get(sk_state):
-        rows         = st.session_state['sk_result_rows']
-        globals_data = st.session_state['sk_result_globals']
-        template_type = st.session_state['sk_result_type']
-        filename     = st.session_state['sk_result_filename']
-        buffer       = st.session_state['sk_result_buffer']
+    if st.session_state.get(_processed_key):
+        rows         = st.session_state[f'sk_result_rows_{_count}']
+        globals_data = st.session_state[f'sk_result_globals_{_count}']
+        template_type = st.session_state[f'sk_result_type_{_count}']
+        filename     = st.session_state[f'sk_result_filename_{_count}']
+        buffer       = st.session_state[f'sk_result_buffer_{_count}']
 
-        res_label_col, res_clear_col = st.columns([3, 1])
-        with res_label_col:
-            st.markdown('<div class="section-label">08 · Results</div>',
-                        unsafe_allow_html=True)
-        with res_clear_col:
-            if st.button(
-                '🗑 Clear & Start Over',
-                use_container_width=True,
-                key='sk_clear_results_btn',
-                type='secondary',
-                help='Clear all data and generate a new report',
-            ):
-                _clear_sk_state()
-                st.rerun()
+        st.markdown('<div class="section-label">08 · Results</div>',
+                    unsafe_allow_html=True)
 
         excluded_count = sum(1 for r in rows if r.get('is_excluded'))
-        valid_count    = len(rows) - excluded_count
 
         st.markdown(f"""
         <div class="result-grid">
@@ -632,7 +613,7 @@ def render():
                 file_name=filename,
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 use_container_width=True,
-                key='sk_download_btn',
+                key=f'sk_download_btn_{_count}',
             )
 
         st.markdown(
