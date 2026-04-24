@@ -140,9 +140,10 @@ def _write_mcc_footer(ws_data, last_data_row, img_bytes=None, img_width=102, img
     contact_row = last_data_row + MCC_CONTACT_GAP
 
     # ── Note cell ─────────────────────────────────────────────────────────
+    # Font matches template: sz=9 italic black (not #404040 grey).
     cell            = ws_data.cell(note_row, 1)
     cell.value      = MCC_FOOTER_NOTE
-    cell.font       = Font(name='Calibri', size=9, italic=True, color='404040')
+    cell.font       = Font(name='Calibri', size=9, italic=True, color='FF000000')
     cell.alignment  = Alignment(wrap_text=True, vertical='top')
 
     ws_data.merge_cells(
@@ -151,11 +152,29 @@ def _write_mcc_footer(ws_data, last_data_row, img_bytes=None, img_width=102, img
     )
 
     # ── Contact block ──────────────────────────────────────────────────────
-    for offset, (text, bold) in enumerate(MCC_CONTACT_LINES):
-        cell           = ws_data.cell(contact_row + offset, 1)
-        cell.value     = text if text else None
-        cell.font      = Font(name='Calibri', size=9, bold=bold)
-        cell.alignment = Alignment(wrap_text=False)
+    # Per-row fonts replicate the template exactly:
+    #   offset 0 → Name     sz=14 bold  black
+    #   offset 1 → Title    sz=10       orange (FF9900)
+    #   offset 2 → Phone    sz=10       black
+    #   offset 3 → Email    sz=10       blue (0000FF)
+    #   offset 4 → (logo image row, no text)
+    #   offset 5 → Address  sz=10       black
+    _MCC_CONTACT_FONTS = [
+        Font(name='Calibri', size=14, bold=True,  color='FF000000'),  # Name
+        Font(name='Calibri', size=10, bold=False, color='FFFF9900'),  # Title (orange)
+        Font(name='Calibri', size=10, bold=False, color='FF000000'),  # Phone
+        Font(name='Calibri', size=10, bold=False, color='FF0000FF'),  # Email (blue)
+        None,                                                          # logo row
+        Font(name='Calibri', size=10, bold=False, color='FF000000'),  # Address
+    ]
+    _VCENTER = Alignment(vertical='center')
+    for offset, (text, _bold) in enumerate(MCC_CONTACT_LINES):
+        cell       = ws_data.cell(contact_row + offset, 1)
+        cell.value = text if text else None
+        _fnt       = _MCC_CONTACT_FONTS[offset] if offset < len(_MCC_CONTACT_FONTS) else None
+        if _fnt:
+            cell.font      = _fnt
+            cell.alignment = _VCENTER
 
     # ── Restore cell-embedded image at the gap row (MCC_CONTACT_LINES[4]) ─
     # The template stores a logo in A43 (Data) using Excel's rich-value
@@ -332,12 +351,15 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country,
     # start with '=' (e.g. '=B2452(xx) xxxx - xxxx'). Excel evaluates them
     # as formulas and displays #VALUE!. Write clean strings from
     # MCC_CONTACT_LINES so Excel never sees a formula it can't resolve.
-    from openpyxl.styles import Font as _Font
+    # LC Summary contact block: write values only, do NOT override fonts.
+    # The template cells (A23–A28) already carry the correct styles:
+    #   A23 sz=14 bold=True, A24 sz=10 orange, A26 sz=10 blue, etc.
+    # Overriding with a flat size=9 font destroys that formatting.
+    # openpyxl preserves existing cell styles when only .value is written.
     _LC_CONTACT_START = 23
     for _offset, (_text, _bold) in enumerate(MCC_CONTACT_LINES):
         _cell       = ws_summary.cell(_LC_CONTACT_START + _offset, 1)
         _cell.value = _text if _text else None
-        _cell.font  = _Font(name='Calibri', size=9, bold=_bold)
 
     # ── Restore cell-embedded image at A27 (LC Summary gap row) ───────────
     # Same image as in the Data sheet — always anchored at A27 in LC Summary
@@ -666,7 +688,7 @@ def _write_cs_footer(ws_data, last_data_row, img_bytes=None,
     # ── Note text + merge A:J ─────────────────────────────────────────────
     cell           = ws_data.cell(note_row, 1)
     cell.value     = CS_FOOTER_NOTE
-    cell.font      = Font(name='Calibri', size=9, italic=True, color='404040')
+    cell.font      = Font(name='Calibri', size=9, italic=True, color='FF000000')
     cell.alignment = Alignment(wrap_text=True, vertical='top')
 
     ws_data.merge_cells(
