@@ -2,10 +2,72 @@
 NNS Report Writer - fills MCC and CS templates with processed data.
 """
 
+import base64
+import io
+import re
+import zipfile
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from datetime import date
+
+
+# ---------------------------------------------------------------------------
+# MCC FOOTER CONSTANTS
+# Code owns the MCC Data sheet footer entirely.
+# The template only needs to supply rows 1–31 (header + 18 data rows).
+# Update these values when Trimble provides new contact information.
+# ---------------------------------------------------------------------------
+
+MCC_NOTE_GAP    = 5   # rows between last data row and the Nota row
+MCC_CONTACT_GAP = 8   # rows between last data row and first contact line
+
+MCC_FOOTER_NOTE = (
+    "Nota: El presente documento contiene información confidencial "
+    "y se proporciona exclusivamente dentro del marco de License Compliance."
+)
+
+# (text, bold) — one tuple per contact block line
+MCC_CONTACT_LINES = [
+    ("XXXXXXXXXX",                                    True),   # specialist name
+    ("Especialista en Resolución",                    False),
+    ("(xx) xxxx - xxxx",                              False),  # phone
+    ("xxxxx@ruvixx.com",                              False),  # email
+    ("",                                              False),
+    ("425 Page Mill Rd, Suite 200, Palo Alto, 94306", False),  # address
+]
+
+
+# ---------------------------------------------------------------------------
+# MCC CELL-EMBEDDED IMAGE (image1.png — 102×34 px compliance logo)
+# Extracted from the MCC template's xl/media/image1.png.
+# The template stores this image in cells A27 (LC Summary) and A43 (Data)
+# using Excel's "Insert image in cell" rich-value feature (vm attribute).
+# openpyxl strips that mechanism on read/write; we re-insert it as a
+# standard floating OneCellAnchor drawing from this embedded PNG constant.
+# If Trimble updates the logo, replace this value with the new base64.
+# ---------------------------------------------------------------------------
+
+_MCC_CELL_IMAGE_B64 = (
+    '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'
+)
+_MCC_CELL_IMAGE_BYTES = base64.b64decode(_MCC_CELL_IMAGE_B64)
+
+# ---------------------------------------------------------------------------
+# CS FOOTER CONSTANTS
+# Code owns the CS Data sheet footer for all three templates (ARG, Q1, PAR).
+# The template only needs to supply rows 1–23 (header + 12 data rows).
+# Update these values when Trimble provides new contact information.
+# ---------------------------------------------------------------------------
+
+CS_NOTE_GAP    = 9   # rows from last data row to the Note row   (23 + 9  = 32)
+CS_IMAGE_GAP   = 7   # rows from last data row to footer image   (0-based row 30 = Excel 31)
+CS_MERGE_D_GAP = 5   # rows from last data row to the D:M merge  (23 + 5  = 28)
+
+CS_FOOTER_NOTE = (
+    "Note: This document contains confidential information and is "
+    "provided exclusively within the framework of License Compliance."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,9 +115,189 @@ def format_date(d):
 # MCC TEMPLATE FILLER
 # ---------------------------------------------------------------------------
 
-def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
+def _write_mcc_footer(ws_data, last_data_row, img_bytes=None, img_width=102, img_height=34):
+    """
+    Write the MCC Data sheet footer at a position computed from last_data_row.
+    Called for every run — regardless of machine count — so the footer is
+    always correctly placed and never overwritten by machine data.
+
+    Writes:
+      • Nota row (merged A:H) at last_data_row + MCC_NOTE_GAP
+      • Contact block lines starting at last_data_row + MCC_CONTACT_GAP
+      • Cell-embedded image (MCC_CONTACT_LINES index 4 = gap row) restored
+        as a floating OneCellAnchor image if img_bytes is supplied.
+
+    img_bytes: raw PNG bytes of the rich-value cell image extracted from the
+               template (xl/media/image1.png via wb._archive).  The template
+               has this image in cells A27 (LC Summary) and A43 (Data) using
+               Excel's "Insert image in cell" (rich-value) feature which
+               openpyxl cannot preserve natively.  We re-insert it as a
+               standard floating drawing so it appears in the same position.
+    """
+    from openpyxl.styles import Font, Alignment
+
+    note_row    = last_data_row + MCC_NOTE_GAP
+    contact_row = last_data_row + MCC_CONTACT_GAP
+
+    # ── Note cell ─────────────────────────────────────────────────────────
+    cell            = ws_data.cell(note_row, 1)
+    cell.value      = MCC_FOOTER_NOTE
+    cell.font       = Font(name='Calibri', size=9, italic=True, color='404040')
+    cell.alignment  = Alignment(wrap_text=True, vertical='top')
+
+    ws_data.merge_cells(
+        start_row=note_row, start_column=1,
+        end_row=note_row,   end_column=8,
+    )
+
+    # ── Contact block ──────────────────────────────────────────────────────
+    for offset, (text, bold) in enumerate(MCC_CONTACT_LINES):
+        cell           = ws_data.cell(contact_row + offset, 1)
+        cell.value     = text if text else None
+        cell.font      = Font(name='Calibri', size=9, bold=bold)
+        cell.alignment = Alignment(wrap_text=False)
+
+    # ── Restore cell-embedded image at the gap row (MCC_CONTACT_LINES[4]) ─
+    # The template stores a logo in A43 (Data) using Excel's rich-value
+    # cell-image feature (vm attribute).  openpyxl strips this on read.
+    # We re-insert the extracted image bytes as a floating drawing anchored
+    # at the same cell so the logo appears in the correct position.
+    # Row height is set to 22.2pt to match LC Summary A27 (the same image
+    # there has ht=22.2pt in the template — ensures the logo is fully visible).
+    if img_bytes:
+        from openpyxl.drawing.image import Image as _XLImg
+        _img            = _XLImg(io.BytesIO(img_bytes))
+        _img.width      = img_width
+        _img.height     = img_height
+        _img_row        = contact_row + 4
+        ws_data.row_dimensions[_img_row].height = max(22.2, img_height * 0.75)
+        ws_data.add_image(_img, f'A{_img_row}')
+
+
+# ---------------------------------------------------------------------------
+# TEMPLATE IMAGE EXTRACTION
+# openpyxl strips Excel's "Insert image in cell" (rich-value / vm attribute)
+# on read/write.  These helpers extract every vm= image from the raw template
+# ZIP and re-insert them as standard floating OneCellAnchor drawings.
+# ---------------------------------------------------------------------------
+
+def _extract_template_images(raw_bytes):
+    """
+    Extract all rich-value (vm=) cell images from the raw template bytes.
+
+    Returns
+    -------
+    vm_cell_images : dict  {(sheet_index_1based, cell_coord): (img_bytes, w_px, h_px)}
+        One entry per vm= cell found in any sheet.
+    """
+    import struct as _struct
+
+    def _png_dims(data):
+        if data[:4] == b'\x89PNG':
+            return (_struct.unpack('>I', data[16:20])[0],
+                    _struct.unpack('>I', data[20:24])[0])
+        return None, None
+
+    media   = {}            # {filename: (bytes, w, h)}
+    vm_map  = {}            # {vm_index_1based: filename}
+    result  = {}            # {(sheet_idx, coord): (bytes, w, h)}
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as z:
+            names = z.namelist()
+
+            # ── Extract all media images ─────────────────────────────────
+            for name in names:
+                if name.startswith('xl/media/'):
+                    fname = name.split('/')[-1]
+                    data  = z.read(name)
+                    w, h  = _png_dims(data)
+                    media[fname] = (data, w, h)
+
+            # ── Parse richValue rels: rId → filename ─────────────────────
+            rv_rels = {}
+            rels_path = 'xl/richData/_rels/richValueRel.xml.rels'
+            if rels_path in names:
+                rels_xml = z.read(rels_path).decode()
+                for m in re.finditer(
+                        r'Id="(rId\d+)"[^>]*Target="[^"]*?([^/"]+)"', rels_xml):
+                    rv_rels[m.group(1)] = m.group(2)
+
+            # ── Parse rdrichvalue.xml: vm index → rId (via LocalImageIdentifier) ─
+            rv_xml_path = 'xl/richData/rdrichvalue.xml'
+            if rv_xml_path in names:
+                rv_xml = z.read(rv_xml_path).decode()
+                # Each <rv> first <v> = LocalImageIdentifier (0-based index into sorted rIds)
+                entries = re.findall(r'<rv[^>]*>.*?<v>(\d+)</v>', rv_xml, re.DOTALL)
+                sorted_rids = sorted(rv_rels.keys(), key=lambda x: int(x[3:]))
+                for i, img_id_str in enumerate(entries):
+                    img_id = int(img_id_str)
+                    if img_id < len(sorted_rids):
+                        fname = rv_rels.get(sorted_rids[img_id])
+                        if fname:
+                            vm_map[i + 1] = fname   # vm is 1-based
+
+            # ── Scan each sheet for cells with vm= attribute ─────────────
+            for si in range(1, 10):
+                sname = f'xl/worksheets/sheet{si}.xml'
+                if sname not in names:
+                    break
+                content = z.read(sname).decode('utf-8')
+                for row_m in re.finditer(
+                        r'<row r="(\d+)"[^>]*>(.*?)</row>', content, re.DOTALL):
+                    rb = row_m.group(2)
+                    for cm in re.finditer(r'<c r="([^"]+)"[^>]*vm="(\d+)"', rb):
+                        coord   = cm.group(1)
+                        vm_idx  = int(cm.group(2))
+                        fname   = vm_map.get(vm_idx)
+                        if fname and fname in media:
+                            result[(si, coord)] = media[fname]
+
+    except Exception:
+        pass   # template may not have rich-value images — skip silently
+
+    return result
+
+
+def _restore_header_images(ws, vm_cell_images, sheet_idx, max_row=5):
+    """
+    Re-insert header-area vm= images (rows 1–max_row) as floating drawings.
+    Called after writing all data so we don't conflict with row operations.
+
+    The original templates anchor these images at row 1 with a very small
+    (1pt) row height; the images extend visually into the rows below.
+    The underlying cells held '#VALUE!' as cached errors — cleared here
+    so the worksheet doesn't show error text behind the floating images.
+    """
+    from openpyxl.drawing.image import Image as _XLImg
+    for (si, coord), (img_bytes, w, h) in vm_cell_images.items():
+        if si != sheet_idx:
+            continue
+        m = re.match(r'[A-Z]+(\d+)', coord)
+        if not m or int(m.group(1)) > max_row:
+            continue
+        if img_bytes and w and h:
+            # Clear the cached #VALUE! from the original vm= cell
+            try:
+                ws[coord].value = None
+            except Exception:
+                pass
+            _img        = _XLImg(io.BytesIO(img_bytes))
+            _img.width  = w
+            _img.height = h
+            ws.add_image(_img, coord)
+
+
+def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country,
+             vm_cell_images=None):
     ws_summary = wb['LC Summary']
     ws_data    = wb['Data']
+
+    # ── Cell-embedded image: use the pre-embedded PNG constant ─────────────
+    # The MCC template stores a logo in A27 (LC Summary) and A43 (Data)
+    # using Excel's rich-value cell-image feature (vm attribute) which
+    # openpyxl strips on read/write.  Use the pre-embedded constant bytes.
+    _img_bytes = _MCC_CELL_IMAGE_BYTES
 
     # ---- LC Summary (footer stays at fixed template positions: 20, 23-26, 28) ----
     ws_summary['B8']  = ', '.join(case_ids)
@@ -74,6 +316,32 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
     ws_summary['E16'] = globals_data['total_events']
     ws_summary['F16'] = globals_data['total_licenses']
     ws_summary['G16'] = globals_data['years_of_use']
+
+    # ── LC Summary: overwrite contact block with clean plain-text values ──
+    # The MCC template has formula-like placeholders in rows 23–28 that
+    # start with '=' (e.g. '=B2452(xx) xxxx - xxxx'). Excel evaluates them
+    # as formulas and displays #VALUE!. Write clean strings from
+    # MCC_CONTACT_LINES so Excel never sees a formula it can't resolve.
+    from openpyxl.styles import Font as _Font
+    _LC_CONTACT_START = 23
+    for _offset, (_text, _bold) in enumerate(MCC_CONTACT_LINES):
+        _cell       = ws_summary.cell(_LC_CONTACT_START + _offset, 1)
+        _cell.value = _text if _text else None
+        _cell.font  = _Font(name='Calibri', size=9, bold=_bold)
+
+    # ── Restore cell-embedded image at A27 (LC Summary gap row) ───────────
+    # Same image as in the Data sheet — always anchored at A27 in LC Summary
+    # since the contact block here is at fixed rows 23–28.
+    # Row height 22.2pt matches the original template (row 27 has ht=22.2pt,
+    # the only row in LC Summary with a non-standard height).
+    if _img_bytes:
+        from openpyxl.drawing.image import Image as _XLImg2
+        _img2        = _XLImg2(io.BytesIO(_img_bytes))
+        _img2.width  = 102
+        _img2.height = 34
+        _lc_img_row  = _LC_CONTACT_START + 4   # = 27
+        ws_summary.row_dimensions[_lc_img_row].height = 22.2
+        ws_summary.add_image(_img2, f'A{_lc_img_row}')
 
     # Check for COMPUTER DOMAIN column in summary header row
     SUMMARY_HEADER_ROW = 13
@@ -107,14 +375,27 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
     n_rows = len(rows)
     n_template_cols = max(col_map.values()) if col_map else 8
 
-    # Template footer constants (MCC Data sheet)
+    # Template layout constants
     TEMPLATE_LAST_DATA_ROW = DATA_START_ROW + TEMPLATE_DATA_ROWS - 1  # row 31
-    NOTE_ROW_IN_TEMPLATE   = 36   # 'Nota:...' row in the blank template
-    IMAGE_ROW_IN_TEMPLATE  = 42   # footer image row in the blank template
-    NOTE_GAP  = NOTE_ROW_IN_TEMPLATE  - TEMPLATE_LAST_DATA_ROW   # 5
-    IMAGE_GAP = IMAGE_ROW_IN_TEMPLATE - TEMPLATE_LAST_DATA_ROW   # 11
 
-    # Write data rows; copy template styles to any row beyond pre-bordered range
+    last_data_row = DATA_START_ROW + n_rows - 1
+    excess        = TEMPLATE_DATA_ROWS - n_rows
+
+    # ── Clear old template footer zone ────────────────────────────────────
+    # Must happen BEFORE writing data rows so that data written into rows
+    # 32+ is not subsequently wiped. Merges cleared first to avoid the
+    # AttributeError raised when assigning to a merged-cell slave.
+    ws_data.merged_cells.ranges.clear()
+
+    for r in range(TEMPLATE_LAST_DATA_ROW + 1, TEMPLATE_LAST_DATA_ROW + 25):
+        for c in range(1, n_template_cols + 1):
+            try:
+                ws_data.cell(r, c).value = None
+            except AttributeError:
+                pass  # residual merged slave — safe to skip after range.clear()
+
+    # ── Write data rows ────────────────────────────────────────────────────
+    # Copy template styles to any row beyond the 18 pre-bordered template rows.
     for idx, row in enumerate(rows):
         r = DATA_START_ROW + idx
         if idx >= TEMPLATE_DATA_ROWS:
@@ -136,47 +417,17 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
                     val = format_date(val)
             safe_set(ws_data, r, col_idx, val)
 
-    excess = TEMPLATE_DATA_ROWS - n_rows
+    # ── Row count adjustment ───────────────────────────────────────────────
     if excess > 0:
-        # Fewer machines than template rows: delete excess, footer shifts up naturally
+        # Fewer machines than the 18 template rows: delete the empty surplus.
+        # After deletion the footer is written at the correct position below.
         ws_data.delete_rows(DATA_START_ROW + n_rows, excess)
-    elif excess < 0:
-        # More machines than template rows: push footer below last data row
-        extra_rows = -excess
-        data_end   = DATA_START_ROW + n_rows - 1
-        note_row   = data_end + NOTE_GAP
-        image_row  = data_end + IMAGE_GAP  # 1-based Excel row
 
-        # Re-write footer note (template note at row 36 was overwritten by data)
-        note_text = ws_data.cell(NOTE_ROW_IN_TEMPLATE, 1).value
-        if not note_text or 'Nota:' not in str(note_text):
-            note_text = ('Nota: El presente documento contiene información confidencial '
-                         'y se proporciona exclusivamente dentro del marco de License Compliance.')
-        ws_data.cell(note_row, 1).value = note_text
+    # ── Write footer at the computed position ─────────────────────────────
+    # Always done in code — works for 1 machine or 1 000+ machines.
+    _write_mcc_footer(ws_data, last_data_row, img_bytes=_img_bytes)
 
-        # Shift footer merge rows
-        old_ranges = [
-            (mc.min_row, mc.min_col, mc.max_row, mc.max_col)
-            for mc in ws_data.merged_cells.ranges
-        ]
-        ws_data.merged_cells.ranges.clear()
-        for (min_row, min_col, max_row, max_col) in old_ranges:
-            if min_row >= NOTE_ROW_IN_TEMPLATE - NOTE_GAP:
-                min_row += extra_rows
-                max_row += extra_rows
-            ws_data.merge_cells(start_row=min_row, start_column=min_col,
-                                 end_row=max_row, end_column=max_col)
-
-        # Shift footer image anchor
-        target_img_row_0based = image_row - 1
-        for img in ws_data._images:
-            try:
-                if img.anchor._from.row >= IMAGE_ROW_IN_TEMPLATE - 1:
-                    img.anchor._from.row = target_img_row_0based
-            except Exception:
-                pass
-
-    data_end_row = DATA_START_ROW + n_rows - 1
+    data_end_row = last_data_row
 
     # Fix stale cell-level hyperlink refs after delete_rows
     for row in ws_data.iter_rows():
@@ -199,6 +450,14 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
 
     for col_idx in sorted(cols_to_delete, reverse=True):
         ws_data.delete_cols(col_idx)
+
+    # ── Restore header vm= images as floating drawings ─────────────────────
+    # The new MCC template stores all logos as rich-value cell images (vm
+    # attribute) which openpyxl strips on read/write.  Re-insert them so
+    # the header area (rows 1–5) logos appear in the generated output.
+    if vm_cell_images:
+        _restore_header_images(ws_summary, vm_cell_images, sheet_idx=1)
+        _restore_header_images(ws_data,    vm_cell_images, sheet_idx=2)
 
     return wb
 
@@ -327,10 +586,68 @@ def _copy_row_style(ws, src_row, dst_row, max_col):
             pass
 
 
-def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
-    summary_name = detect_summary_sheet(wb)
-    ws_summary   = wb[summary_name]
-    ws_data      = wb['Data']
+def _write_cs_footer(ws_data, last_data_row, img_bytes=None,
+                     img_width=None, img_height=None):
+    """
+    Write the CS Data sheet footer at a position computed from last_data_row.
+    Called for every run so the footer is always correctly placed.
+
+    Writes:
+      • D:M merge at last_data_row + CS_MERGE_D_GAP  (structural, no text)
+      • Footer image at last_data_row + CS_IMAGE_GAP if img_bytes provided.
+        The CS template stores this as a rich-value cell image (vm attribute)
+        which openpyxl strips; we re-insert it as a standard floating drawing.
+      • Note text + A:J merge at last_data_row + CS_NOTE_GAP
+    """
+    from openpyxl.styles import Font, Alignment
+
+    note_row    = last_data_row + CS_NOTE_GAP
+    image_row   = last_data_row + CS_IMAGE_GAP   # 0-based anchor row
+    merge_d_row = last_data_row + CS_MERGE_D_GAP
+
+    # ── D:M structural merge ──────────────────────────────────────────────
+    ws_data.merge_cells(
+        start_row=merge_d_row, start_column=4,
+        end_row=merge_d_row,   end_column=13,
+    )
+
+    # ── Footer image ──────────────────────────────────────────────────────
+    # Add the dynamically-extracted vm= image at the computed position.
+    # (Old: reposition existing floating images — this no longer applies since
+    #  all CS Data sheet images are rich-value cells, not floating drawings.)
+    if img_bytes and img_width and img_height:
+        from openpyxl.drawing.image import Image as _XLImg
+        _img        = _XLImg(io.BytesIO(img_bytes))
+        _img.width  = img_width
+        _img.height = img_height
+        _excel_img_row = image_row + 1  # convert 0-based to 1-based for add_image
+        ws_data.add_image(_img, f'A{_excel_img_row}')
+
+    # ── Note text + merge A:J ─────────────────────────────────────────────
+    cell           = ws_data.cell(note_row, 1)
+    cell.value     = CS_FOOTER_NOTE
+    cell.font      = Font(name='Calibri', size=9, italic=True, color='404040')
+    cell.alignment = Alignment(wrap_text=True, vertical='top')
+
+    ws_data.merge_cells(
+        start_row=note_row, start_column=1,
+        end_row=note_row,   end_column=10,
+    )
+
+
+def fill_cs(wb, rows, globals_data, case_ids, entity_name, country, vm_cell_images=None):
+    summary_name   = detect_summary_sheet(wb)
+    ws_summary     = wb[summary_name]
+    ws_data        = wb['Data']
+    vm_cell_images = vm_cell_images or {}
+
+    # ── Pre-extract footer and header images from vm_cell_images ──────────
+    # CS Summary A37: small footer logo (always at original row 37 in template)
+    _cs_sum_footer_img = vm_cell_images.get((1, 'A37'))   # (bytes, w, h) or None
+    # CS Data A31: footer logo (at row 31 = last_data_row+7+1 for 12 machines)
+    _cs_dat_footer_img = (vm_cell_images.get((2, 'A31'))
+                          or vm_cell_images.get((2, 'A30'))
+                          or None)
 
     # ---- Determine if Computer Domain row should be deleted ----
     # Template row 12 = 'Computer Domain'.
@@ -448,12 +765,30 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
 
     n_rows = len(rows)
 
-    # Write machine data rows — dates as datetime objects (preserves template formatting)
-    STYLE_SRC_ROW = DATA_START_ROW  # template data row to copy styles from
+    TEMPLATE_LAST_DATA_ROW = DATA_START_ROW + TEMPLATE_DATA_ROWS - 1  # row 23
+    excess        = TEMPLATE_DATA_ROWS - n_rows
+    last_data_row = DATA_START_ROW + n_rows - 1
     n_template_cols = max(col_map.values()) if col_map else 12
+
+    # ── Clear old template footer zone ────────────────────────────────────
+    # Must happen BEFORE writing data rows so that data written to rows
+    # 24+ is not subsequently wiped. Merges cleared first to avoid the
+    # AttributeError raised when assigning to a merged-cell slave.
+    ws_data.merged_cells.ranges.clear()
+
+    for r in range(TEMPLATE_LAST_DATA_ROW + 1, TEMPLATE_LAST_DATA_ROW + 30):
+        for c in range(1, n_template_cols + 1):
+            try:
+                ws_data.cell(r, c).value = None
+            except AttributeError:
+                pass  # residual merged slave — safe after range.clear()
+
+    # ── Write machine data rows ────────────────────────────────────────────
+    # Dates as datetime objects (preserves template formatting).
+    # Copy styles from template row 12 for any row beyond the 12-row zone.
+    STYLE_SRC_ROW = DATA_START_ROW
     for idx, row in enumerate(rows):
         r = DATA_START_ROW + idx
-        # For rows beyond the template pre-bordered range, copy styles from template row
         if idx >= TEMPLATE_DATA_ROWS:
             _copy_row_style(ws_data, STYLE_SRC_ROW, r, n_template_cols)
         for header, field in cs_col_order:
@@ -472,7 +807,7 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
                     val = format_date(val)
             safe_set(ws_data, r, col_idx, val)
 
-    # Apply correct date format to date columns before writing is complete
+    # Apply correct date format to date columns
     date_fmt = 'yyyy\\-mm\\-dd'
     date_fields = ['First Event', 'Last Event']
     for df in date_fields:
@@ -481,62 +816,24 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
             for r in range(DATA_START_ROW, DATA_START_ROW + n_rows):
                 ws_data.cell(r, col_idx).number_format = date_fmt
 
-    # Template has TEMPLATE_DATA_ROWS pre-bordered rows.
-    # If n_rows < template: delete excess rows (footer shifts up).
-    # If n_rows > template: extra rows beyond template must push footer down.
-    excess = TEMPLATE_DATA_ROWS - n_rows
-    TEMPLATE_LAST_DATA_ROW = DATA_START_ROW + TEMPLATE_DATA_ROWS - 1  # row 23
-    # Gap from last template data row to footer note and image in template
-    NOTE_ROW_IN_TEMPLATE  = 32   # template row for the footer note in Data sheet
-    IMAGE_ROW_IN_TEMPLATE = 31   # template row (1-based) for footer image
-    NOTE_GAP  = NOTE_ROW_IN_TEMPLATE  - TEMPLATE_LAST_DATA_ROW  # 9
-    IMAGE_GAP = IMAGE_ROW_IN_TEMPLATE - TEMPLATE_LAST_DATA_ROW  # 8
-
+    # ── Row count adjustment ───────────────────────────────────────────────
     if excess > 0:
-        # Fewer machines than template rows: delete excess, footer shifts up naturally
-        _fix_image_anchors_after_rows_deletion(ws_data, DATA_START_ROW + n_rows - 1, excess)
+        # Fewer machines than the 12 template rows: delete empty surplus.
+        # No merge/anchor fix needed — _write_cs_footer repositions everything.
         ws_data.delete_rows(DATA_START_ROW + n_rows, excess)
-        _fix_merged_cells_after_row_deletion(ws_data, DATA_START_ROW + n_rows, excess)
-    elif excess < 0:
-        # More machines than template rows: footer stays at original template position
-        # but machine data overwrites it. Explicitly push footer below last data row.
-        extra_rows = -excess  # how many rows beyond template
-        data_end = DATA_START_ROW + n_rows - 1
 
-        # Write footer note at correct position
-        note_row  = data_end + NOTE_GAP
-        image_row = data_end + IMAGE_GAP  # 0-based = image_row - 1
+    # ── Write footer at the computed position ─────────────────────────────
+    # Always done in code — works for 1 machine or 1 000+ machines.
+    if _cs_dat_footer_img:
+        _dat_img_bytes, _dat_img_w, _dat_img_h = _cs_dat_footer_img
+    else:
+        _dat_img_bytes, _dat_img_w, _dat_img_h = None, None, None
+    _write_cs_footer(ws_data, last_data_row,
+                     img_bytes=_dat_img_bytes,
+                     img_width=_dat_img_w,
+                     img_height=_dat_img_h)
 
-        # Re-write note text (template note at row 32 was overwritten by machine data)
-        note_text = ws_data.cell(NOTE_ROW_IN_TEMPLATE, 1).value
-        if not note_text or 'Note:' not in str(note_text):
-            note_text = ('Note: This document contains confidential information and is '
-                         'provided exclusively within the framework of License Compliance.')
-        ws_data.cell(note_row, 1).value = note_text
-
-        # Shift footer merges (A32:J32 and D28:M28) to correct rows
-        old_ranges = [
-            (mc.min_row, mc.min_col, mc.max_row, mc.max_col)
-            for mc in ws_data.merged_cells.ranges
-        ]
-        ws_data.merged_cells.ranges.clear()
-        for (min_row, min_col, max_row, max_col) in old_ranges:
-            if min_row >= NOTE_ROW_IN_TEMPLATE - NOTE_GAP:  # footer area rows (>=28)
-                min_row += extra_rows
-                max_row += extra_rows
-            ws_data.merge_cells(start_row=min_row, start_column=min_col,
-                                 end_row=max_row, end_column=max_col)
-
-        # Shift footer image anchor to correct row (0-based)
-        target_img_row_0based = image_row - 1  # 0-based
-        for img in ws_data._images:
-            try:
-                if img.anchor._from.row >= IMAGE_ROW_IN_TEMPLATE - 1:  # footer image area
-                    img.anchor._from.row = target_img_row_0based
-            except Exception:
-                pass
-
-    data_end_row = DATA_START_ROW + n_rows - 1
+    data_end_row = last_data_row
 
     # Fix stale cell-level hyperlink refs after delete_rows
     for data_row in ws_data.iter_rows():
@@ -560,6 +857,33 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
         # Fix merged cell col ranges (openpyxl doesn't update them after delete_cols)
         _fix_merged_cells_after_col_deletion(ws_data, col_idx)
 
+    # ── Restore CS Summary A37 footer logo ────────────────────────────────
+    # The CS template has a vm= image at A37 in the Summary sheet.
+    # It shifts to A36 if the Computer Domain row was deleted (row 12 deleted
+    # → everything below shifts up by 1, so A37 → A36).
+    # The original cell held '#VALUE!' as a cached error — clear it first so
+    # the cell doesn't show an error behind the floating image.
+    if _cs_sum_footer_img:
+        from openpyxl.drawing.image import Image as _XLImgCS
+        _sf_bytes, _sf_w, _sf_h = _cs_sum_footer_img
+        _sf_row = 36 if delete_domain_row else 37
+        # Clear any cached #VALUE! from the template cell
+        try:
+            ws_summary.cell(_sf_row, 1).value = None
+        except Exception:
+            pass
+        _sf_img         = _XLImgCS(io.BytesIO(_sf_bytes))
+        _sf_img.width   = _sf_w
+        _sf_img.height  = _sf_h
+        ws_summary.add_image(_sf_img, f'A{_sf_row}')
+
+    # ── Restore header vm= images as floating drawings ─────────────────────
+    # The CS templates store all header logos as rich-value cell images
+    # (vm attribute) which openpyxl strips on read/write.  Re-insert them.
+    if vm_cell_images:
+        _restore_header_images(ws_summary, vm_cell_images, sheet_idx=1)
+        _restore_header_images(ws_data,    vm_cell_images, sheet_idx=2)
+
     return wb
 
 
@@ -567,13 +891,29 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
 # MAIN ENTRY POINT
 # ---------------------------------------------------------------------------
 
-def fill_template(template_wb, rows, globals_data, case_ids, entity_name, country):
+def fill_template(template_wb, rows, globals_data, case_ids, entity_name, country,
+                  raw_bytes=None):
+    """
+    raw_bytes: the raw .xlsx file bytes, used to extract rich-value (vm=)
+               cell images before openpyxl strips them.  Pass the template
+               file bytes (read before loading with openpyxl) for full
+               image fidelity.  If None, only the pre-embedded MCC footer
+               constant is available as a fallback.
+    """
     wb            = template_wb
     template_type = detect_template_type(wb)
+
+    # Extract all vm= cell images from the raw template bytes
+    vm_cell_images = {}
+    if raw_bytes:
+        vm_cell_images = _extract_template_images(raw_bytes)
+
     if template_type == 'MCC':
-        wb = fill_mcc(wb, rows, globals_data, case_ids, entity_name, country)
+        wb = fill_mcc(wb, rows, globals_data, case_ids, entity_name, country,
+                      vm_cell_images=vm_cell_images)
     else:
-        wb = fill_cs(wb, rows, globals_data, case_ids, entity_name, country)
+        wb = fill_cs(wb, rows, globals_data, case_ids, entity_name, country,
+                     vm_cell_images=vm_cell_images)
     return wb, template_type
 
 
