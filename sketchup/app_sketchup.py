@@ -21,7 +21,20 @@ from sketchup.report_writer import fill_template, patch_and_save
 # CONFIG
 # ---------------------------------------------------------------------------
 
-CONFIG_PATH = Path(__file__).parent / 'config.json'
+CONFIG_PATH    = Path(__file__).parent / 'config.json'
+TEMPLATES_DIR  = Path(__file__).parent.parent / 'templates'
+
+# Template filenames inside templates/
+_TMPL_MCC     = 'MCC_-_Evidence_Report.xlsx'
+_TMPL_CS_ARG  = 'CS_-_Evidence_Report_SOUTH__ARGENTINA_.xlsx'
+_TMPL_CS_PAR  = 'CS_-_Evidence_Report_SOUTH__PARAGUAY_.xlsx'
+_TMPL_CS_Q1   = 'CS_-_Evidence_Report_SOUTH.xlsx'   # all other CS countries
+
+# Countries with dedicated CS templates
+_CS_COUNTRY_TEMPLATES = {
+    'Argentina': _TMPL_CS_ARG,
+    'Paraguay':  _TMPL_CS_PAR,
+}
 
 
 def _load_config():
@@ -41,6 +54,25 @@ def _all_countries(config):
     for region, data in config['regions'].items():
         countries.extend(data['countries'])
     return sorted(countries)
+
+
+def _get_template_path(country, config):
+    """
+    Return the Path to the correct pre-stored Evidence Report template
+    based on the selected country.
+
+    MCC  → templates/MCC_-_Evidence_Report.xlsx
+    CS:
+      Argentina → templates/CS_-_Evidence_Report_SOUTH__ARGENTINA_.xlsx
+      Paraguay  → templates/CS_-_Evidence_Report_SOUTH__PARAGUAY_.xlsx
+      Others    → templates/CS_-_Evidence_Report_SOUTH.xlsx
+    """
+    region = _get_region(country, config)
+    if region == 'MCC':
+        return TEMPLATES_DIR / _TMPL_MCC
+    # CS
+    fname = _CS_COUNTRY_TEMPLATES.get(country, _TMPL_CS_Q1)
+    return TEMPLATES_DIR / fname
 
 
 def _tip(text: str) -> str:
@@ -165,29 +197,17 @@ def render():
     """Render the full SketchUp Evidence Report Generator UI inside its tab."""
 
     # ── Counter-based reset ─────────────────────────────────────────────────
-    # Every widget key includes _count.  When Clear is pressed, _count
-    # increments → Streamlit sees entirely new widget keys → renders all
-    # widgets fresh, including file uploaders which cannot be reset any
-    # other way.
     _count = st.session_state.get('sk_clear_count', 0)
 
     def _clear():
-        """
-        Increment the clear counter and wipe all other sk_* state.
-        Because every widget key embeds _count, the next render creates
-        brand-new widgets with no previous values — equivalent to a full
-        page refresh, but without losing the tab context.
-        """
         c = st.session_state.get('sk_clear_count', 0)
         for k in [k for k in list(st.session_state.keys())
                   if k.startswith('sk_') and k != 'sk_clear_count']:
             del st.session_state[k]
         st.session_state['sk_clear_count'] = c + 1
 
-    # Inject tooltip CSS
     st.markdown(_TOOLTIP_CSS, unsafe_allow_html=True)
 
-    # User manual link — top right
     _, manual_col = st.columns([5, 1])
     with manual_col:
         _manual_button()
@@ -217,7 +237,6 @@ def render():
             help='Full legal name of the company or organization being investigated.',
         )
 
-        # Dynamic Case ID rows
         _cids_key = f'sk_case_ids_{_count}'
         if _cids_key not in st.session_state:
             st.session_state[_cids_key] = ['']
@@ -255,7 +274,7 @@ def render():
         _label(
             '02 · Country & Region',
             tip='Country where the entity operates. Determines the report region '
-                '(MCC or Cono Sur) and is used to validate IP Country in the event data.',
+                '(MCC or Cono Sur) and selects the correct Evidence Report template automatically.',
             style='margin-top:1.5rem;',
         )
 
@@ -270,9 +289,15 @@ def render():
             selected_region = _get_region(selected_country, config)
             region_name     = config['regions'][selected_region]['name']
             badge_class     = 'region-mcc' if selected_region == 'MCC' else 'region-cs'
+
+            # Show region badge + which template will be used
+            tmpl_path = _get_template_path(selected_country, config)
             st.markdown(
                 f'<span class="region-badge {badge_class}">'
-                f'{selected_region} · {region_name}</span>',
+                f'{selected_region} · {region_name}</span>'
+                f'&nbsp;&nbsp;'
+                f'<span style="font-family:var(--mono);font-size:0.72rem;'
+                f'color:var(--text-muted);">📋 {tmpl_path.name}</span>',
                 unsafe_allow_html=True,
             )
 
@@ -374,26 +399,6 @@ def render():
                     unsafe_allow_html=True,
                 )
 
-        # --- 06 · Template File ---
-        _label(
-            '06 · Template File',
-            tip='The official NNS Evidence Report .xlsx template for this case. '
-                'Use the MCC template for México Central Caribe, '
-                'or the corresponding Cono Sur template (Q1, Argentina, or Paraguay). '
-                'The report type is detected automatically.',
-            style='margin-top:1.5rem;',
-        )
-        template_file = st.file_uploader(
-            'Upload the Evidence Report template',
-            type=['xlsx'],
-            key=f'sk_template_file_{_count}',
-        )
-        if template_file:
-            st.markdown(
-                f'<div class="file-tag">📋 {template_file.name}</div>',
-                unsafe_allow_html=True,
-            )
-
     # -----------------------------------------------------------------------
     # VALIDATION
     # -----------------------------------------------------------------------
@@ -407,15 +412,14 @@ def render():
         'Primary domain':  bool(primary_domain and primary_domain.strip()),
         'Machine file(s)': bool(machine_files),
         'Case event(s)':   bool(event_files),
-        'Template file':   bool(template_file),
     }
     all_valid = all(checks.values())
 
-    st.markdown('<div class="section-label">07 · Validation</div>',
+    st.markdown('<div class="section-label">06 · Validation</div>',
                 unsafe_allow_html=True)
-    check_cols = st.columns(4)
+    check_cols = st.columns(3)
     for idx, (lbl, ok) in enumerate(checks.items()):
-        with check_cols[idx % 4]:
+        with check_cols[idx % 3]:
             dot = 'dot-green' if ok else 'dot-red'
             st.markdown(
                 f'<div class="status-row">'
@@ -426,7 +430,7 @@ def render():
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
     # -----------------------------------------------------------------------
-    # GENERATE + CLEAR  (single clear button, here only)
+    # GENERATE + CLEAR
     # -----------------------------------------------------------------------
 
     gen_col, clear_col, _ = st.columns([2, 1, 2])
@@ -441,7 +445,7 @@ def render():
         if st.button(
             '🗑 Clear Data',
             use_container_width=True,
-            key='sk_clear_btn',       # no counter — always present
+            key='sk_clear_btn',
             type='secondary',
             help='Clear all inputs, files and results — same as a page refresh',
         ):
@@ -481,14 +485,12 @@ def render():
                     country=selected_country,
                 )
 
-                # Read raw bytes BEFORE loading — openpyxl closes the ZIP
-                # on load, making it impossible to extract rich-value images
-                # later.  We pass raw_bytes to fill_template so it can extract
-                # all vm= cell images (logos, footer graphics) and re-insert
-                # them as standard floating drawings in the output.
-                _tmpl_raw  = template_file.read()
+                # ── Load template from repo — selected automatically by country ──
+                tmpl_path  = _get_template_path(selected_country, config)
+                _tmpl_raw  = tmpl_path.read_bytes()
                 template_wb = openpyxl.load_workbook(
                     io.BytesIO(_tmpl_raw), keep_links=True)
+
                 filled_wb, template_type = fill_template(
                     template_wb, rows, globals_data,
                     case_ids_valid, entity_name.strip(), selected_country,
@@ -505,7 +507,7 @@ def render():
                 patch_and_save(filled_wb, buf)
                 buf.seek(0)
 
-                st.session_state[_processed_key]          = True
+                st.session_state[_processed_key]              = True
                 st.session_state[f'sk_result_rows_{_count}']    = rows
                 st.session_state[f'sk_result_globals_{_count}'] = globals_data
                 st.session_state[f'sk_result_type_{_count}']    = template_type
@@ -535,7 +537,7 @@ def render():
         filename     = st.session_state[f'sk_result_filename_{_count}']
         buffer       = st.session_state[f'sk_result_buffer_{_count}']
 
-        st.markdown('<div class="section-label">08 · Results</div>',
+        st.markdown('<div class="section-label">07 · Results</div>',
                     unsafe_allow_html=True)
 
         excluded_count = sum(1 for r in rows if r.get('is_excluded'))
