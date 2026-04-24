@@ -26,8 +26,8 @@ TEMPLATES_DIR  = Path(__file__).parent.parent / 'templates'
 
 # Template filenames inside templates/
 _TMPL_MCC     = 'MCC_-_Evidence_Report.xlsx'
-_TMPL_CS_ARG  = 'CS_-_Evidence_Report_SOUTH__ARGENTINA_.xlsx'
-_TMPL_CS_PAR  = 'CS_-_Evidence_Report_SOUTH__PARAGUAY_.xlsx'
+_TMPL_CS_ARG  = 'CS_-_Evidence_Report_SOUTH_(ARGENTINA).xlsx'
+_TMPL_CS_PAR  = 'CS_-_Evidence_Report_SOUTH_(PARAGUAY).xlsx'
 _TMPL_CS_Q1   = 'CS_-_Evidence_Report_SOUTH.xlsx'   # all other CS countries
 
 # Countries with dedicated CS templates
