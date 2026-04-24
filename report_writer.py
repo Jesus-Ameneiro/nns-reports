@@ -35,6 +35,23 @@ MCC_CONTACT_LINES = [
 
 
 # ---------------------------------------------------------------------------
+# CS FOOTER CONSTANTS
+# Code owns the CS Data sheet footer for all three templates (ARG, Q1, PAR).
+# The template only needs to supply rows 1–23 (header + 12 data rows).
+# Update these values when Trimble provides new contact information.
+# ---------------------------------------------------------------------------
+
+CS_NOTE_GAP    = 9   # rows from last data row to the Note row   (23 + 9  = 32)
+CS_IMAGE_GAP   = 7   # rows from last data row to footer image   (0-based row 30 = Excel 31)
+CS_MERGE_D_GAP = 5   # rows from last data row to the D:M merge  (23 + 5  = 28)
+
+CS_FOOTER_NOTE = (
+    "Note: This document contains confidential information and is "
+    "provided exclusively within the framework of License Compliance."
+)
+
+
+# ---------------------------------------------------------------------------
 # UTILITIES
 # ---------------------------------------------------------------------------
 
@@ -134,6 +151,18 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country):
     ws_summary['E16'] = globals_data['total_events']
     ws_summary['F16'] = globals_data['total_licenses']
     ws_summary['G16'] = globals_data['years_of_use']
+
+    # ── LC Summary: overwrite contact block with clean plain-text values ──
+    # The MCC template has formula-like placeholders in rows 23–28 that
+    # start with '=' (e.g. '=B2452(xx) xxxx - xxxx'). Excel evaluates them
+    # as formulas and displays #VALUE!. Write clean strings from
+    # MCC_CONTACT_LINES so Excel never sees a formula it can't resolve.
+    from openpyxl.styles import Font as _Font
+    _LC_CONTACT_START = 23
+    for _offset, (_text, _bold) in enumerate(MCC_CONTACT_LINES):
+        _cell       = ws_summary.cell(_LC_CONTACT_START + _offset, 1)
+        _cell.value = _text if _text else None
+        _cell.font  = _Font(name='Calibri', size=9, bold=_bold)
 
     # Check for COMPUTER DOMAIN column in summary header row
     SUMMARY_HEADER_ROW = 13
@@ -370,6 +399,50 @@ def _copy_row_style(ws, src_row, dst_row, max_col):
             pass
 
 
+def _write_cs_footer(ws_data, last_data_row):
+    """
+    Write the CS Data sheet footer at a position computed from last_data_row.
+    Called for every run so the footer is always correctly placed.
+
+    Writes:
+      • D:M merge at last_data_row + CS_MERGE_D_GAP  (structural, no text)
+      • Footer image repositioned to last_data_row + CS_IMAGE_GAP  (0-based)
+      • Note text + A:J merge at last_data_row + CS_NOTE_GAP
+    """
+    from openpyxl.styles import Font, Alignment
+
+    note_row    = last_data_row + CS_NOTE_GAP
+    image_row   = last_data_row + CS_IMAGE_GAP   # 0-based anchor row
+    merge_d_row = last_data_row + CS_MERGE_D_GAP
+
+    # ── D:M structural merge ──────────────────────────────────────────────
+    ws_data.merge_cells(
+        start_row=merge_d_row, start_column=4,
+        end_row=merge_d_row,   end_column=13,
+    )
+
+    # ── Footer image: reposition any image past the header area ───────────
+    # Header images are anchored at rows 0–4; the footer image is at row 30.
+    # Any image with _from.row > 10 is the footer image.
+    for img in ws_data._images:
+        try:
+            if img.anchor._from.row > 10:
+                img.anchor._from.row = image_row
+        except Exception:
+            pass
+
+    # ── Note text + merge A:J ─────────────────────────────────────────────
+    cell           = ws_data.cell(note_row, 1)
+    cell.value     = CS_FOOTER_NOTE
+    cell.font      = Font(name='Calibri', size=9, italic=True, color='404040')
+    cell.alignment = Alignment(wrap_text=True, vertical='top')
+
+    ws_data.merge_cells(
+        start_row=note_row, start_column=1,
+        end_row=note_row,   end_column=10,
+    )
+
+
 def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
     summary_name = detect_summary_sheet(wb)
     ws_summary   = wb[summary_name]
@@ -491,12 +564,30 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
 
     n_rows = len(rows)
 
-    # Write machine data rows — dates as datetime objects (preserves template formatting)
-    STYLE_SRC_ROW = DATA_START_ROW  # template data row to copy styles from
+    TEMPLATE_LAST_DATA_ROW = DATA_START_ROW + TEMPLATE_DATA_ROWS - 1  # row 23
+    excess        = TEMPLATE_DATA_ROWS - n_rows
+    last_data_row = DATA_START_ROW + n_rows - 1
     n_template_cols = max(col_map.values()) if col_map else 12
+
+    # ── Clear old template footer zone ────────────────────────────────────
+    # Must happen BEFORE writing data rows so that data written to rows
+    # 24+ is not subsequently wiped. Merges cleared first to avoid the
+    # AttributeError raised when assigning to a merged-cell slave.
+    ws_data.merged_cells.ranges.clear()
+
+    for r in range(TEMPLATE_LAST_DATA_ROW + 1, TEMPLATE_LAST_DATA_ROW + 30):
+        for c in range(1, n_template_cols + 1):
+            try:
+                ws_data.cell(r, c).value = None
+            except AttributeError:
+                pass  # residual merged slave — safe after range.clear()
+
+    # ── Write machine data rows ────────────────────────────────────────────
+    # Dates as datetime objects (preserves template formatting).
+    # Copy styles from template row 12 for any row beyond the 12-row zone.
+    STYLE_SRC_ROW = DATA_START_ROW
     for idx, row in enumerate(rows):
         r = DATA_START_ROW + idx
-        # For rows beyond the template pre-bordered range, copy styles from template row
         if idx >= TEMPLATE_DATA_ROWS:
             _copy_row_style(ws_data, STYLE_SRC_ROW, r, n_template_cols)
         for header, field in cs_col_order:
@@ -515,7 +606,7 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
                     val = format_date(val)
             safe_set(ws_data, r, col_idx, val)
 
-    # Apply correct date format to date columns before writing is complete
+    # Apply correct date format to date columns
     date_fmt = 'yyyy\\-mm\\-dd'
     date_fields = ['First Event', 'Last Event']
     for df in date_fields:
@@ -524,62 +615,17 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country):
             for r in range(DATA_START_ROW, DATA_START_ROW + n_rows):
                 ws_data.cell(r, col_idx).number_format = date_fmt
 
-    # Template has TEMPLATE_DATA_ROWS pre-bordered rows.
-    # If n_rows < template: delete excess rows (footer shifts up).
-    # If n_rows > template: extra rows beyond template must push footer down.
-    excess = TEMPLATE_DATA_ROWS - n_rows
-    TEMPLATE_LAST_DATA_ROW = DATA_START_ROW + TEMPLATE_DATA_ROWS - 1  # row 23
-    # Gap from last template data row to footer note and image in template
-    NOTE_ROW_IN_TEMPLATE  = 32   # template row for the footer note in Data sheet
-    IMAGE_ROW_IN_TEMPLATE = 31   # template row (1-based) for footer image
-    NOTE_GAP  = NOTE_ROW_IN_TEMPLATE  - TEMPLATE_LAST_DATA_ROW  # 9
-    IMAGE_GAP = IMAGE_ROW_IN_TEMPLATE - TEMPLATE_LAST_DATA_ROW  # 8
-
+    # ── Row count adjustment ───────────────────────────────────────────────
     if excess > 0:
-        # Fewer machines than template rows: delete excess, footer shifts up naturally
-        _fix_image_anchors_after_rows_deletion(ws_data, DATA_START_ROW + n_rows - 1, excess)
+        # Fewer machines than the 12 template rows: delete empty surplus.
+        # No merge/anchor fix needed — _write_cs_footer repositions everything.
         ws_data.delete_rows(DATA_START_ROW + n_rows, excess)
-        _fix_merged_cells_after_row_deletion(ws_data, DATA_START_ROW + n_rows, excess)
-    elif excess < 0:
-        # More machines than template rows: footer stays at original template position
-        # but machine data overwrites it. Explicitly push footer below last data row.
-        extra_rows = -excess  # how many rows beyond template
-        data_end = DATA_START_ROW + n_rows - 1
 
-        # Write footer note at correct position
-        note_row  = data_end + NOTE_GAP
-        image_row = data_end + IMAGE_GAP  # 0-based = image_row - 1
+    # ── Write footer at the computed position ─────────────────────────────
+    # Always done in code — works for 1 machine or 1 000+ machines.
+    _write_cs_footer(ws_data, last_data_row)
 
-        # Re-write note text (template note at row 32 was overwritten by machine data)
-        note_text = ws_data.cell(NOTE_ROW_IN_TEMPLATE, 1).value
-        if not note_text or 'Note:' not in str(note_text):
-            note_text = ('Note: This document contains confidential information and is '
-                         'provided exclusively within the framework of License Compliance.')
-        ws_data.cell(note_row, 1).value = note_text
-
-        # Shift footer merges (A32:J32 and D28:M28) to correct rows
-        old_ranges = [
-            (mc.min_row, mc.min_col, mc.max_row, mc.max_col)
-            for mc in ws_data.merged_cells.ranges
-        ]
-        ws_data.merged_cells.ranges.clear()
-        for (min_row, min_col, max_row, max_col) in old_ranges:
-            if min_row >= NOTE_ROW_IN_TEMPLATE - NOTE_GAP:  # footer area rows (>=28)
-                min_row += extra_rows
-                max_row += extra_rows
-            ws_data.merge_cells(start_row=min_row, start_column=min_col,
-                                 end_row=max_row, end_column=max_col)
-
-        # Shift footer image anchor to correct row (0-based)
-        target_img_row_0based = image_row - 1  # 0-based
-        for img in ws_data._images:
-            try:
-                if img.anchor._from.row >= IMAGE_ROW_IN_TEMPLATE - 1:  # footer image area
-                    img.anchor._from.row = target_img_row_0based
-            except Exception:
-                pass
-
-    data_end_row = DATA_START_ROW + n_rows - 1
+    data_end_row = last_data_row
 
     # Fix stale cell-level hyperlink refs after delete_rows
     for data_row in ws_data.iter_rows():
