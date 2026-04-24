@@ -277,9 +277,19 @@ def _restore_header_images(ws, vm_cell_images, sheet_idx, max_row=5):
         if not m or int(m.group(1)) > max_row:
             continue
         if img_bytes and w and h:
-            # Clear the cached #VALUE! from the original vm= cell
+            # Clear the cached #VALUE! error from the original vm= cell.
+            # Must reset data_type explicitly: openpyxl reads vm= error cells
+            # as data_type='e'; setting .value=None must also clear the type
+            # or the cell still serialises as <c t="e"><v>#VALUE!</v></c>.
             try:
-                ws[coord].value = None
+                _ecell = ws.cell(
+                    row=int(re.match(r'[A-Z]+(\d+)', coord).group(1)),
+                    column=sum((ord(ch)-64)*26**i
+                               for i,ch in enumerate(
+                                   reversed(re.match(r'([A-Z]+)', coord).group(1))))
+                )
+                _ecell.value     = None
+                _ecell.data_type = 'n'
             except Exception:
                 pass
             _img        = _XLImg(io.BytesIO(img_bytes))
@@ -385,7 +395,12 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country,
     # Must happen BEFORE writing data rows so that data written into rows
     # 32+ is not subsequently wiped. Merges cleared first to avoid the
     # AttributeError raised when assigning to a merged-cell slave.
-    ws_data.merged_cells.ranges.clear()
+    # Only remove footer-zone merges (rows > TEMPLATE_LAST_DATA_ROW).
+    # Preserves header merges (A1:B4, H1:I4) that must not be destroyed.
+    _footer_start = TEMPLATE_LAST_DATA_ROW + 1
+    for _m in [str(m) for m in ws_data.merged_cells.ranges
+               if m.min_row >= _footer_start]:
+        ws_data.merged_cells.remove(_m)
 
     for r in range(TEMPLATE_LAST_DATA_ROW + 1, TEMPLATE_LAST_DATA_ROW + 25):
         for c in range(1, n_template_cols + 1):
@@ -438,7 +453,14 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country,
                     cell.hyperlink.ref = correct_ref
 
     # ---- Column deletion ----
-    # Re-read col_map after potential column deletions from Computer Domains check
+    # ── Restore Data header vm= images BEFORE column deletion ─────────────
+    # Same ordering requirement as fill_cs: header images must be added to
+    # ws_data BEFORE delete_cols so _fix_image_anchors_after_col_deletion
+    # correctly shifts them (e.g. H1 → G1 when Computer Domains col G deleted).
+    if vm_cell_images:
+        _restore_header_images(ws_data, vm_cell_images, sheet_idx=2)
+
+    # Column deletion — also shifts the header images we just added above
     cols_to_delete = []
     for header in ['Computer Domains', 'Client Email Addresses']:
         col_idx = col_map.get(header)
@@ -450,14 +472,12 @@ def fill_mcc(wb, rows, globals_data, case_ids, entity_name, country,
 
     for col_idx in sorted(cols_to_delete, reverse=True):
         ws_data.delete_cols(col_idx)
+        _fix_image_anchors_after_col_deletion(ws_data, col_idx - 1)
 
-    # ── Restore header vm= images as floating drawings ─────────────────────
-    # The new MCC template stores all logos as rich-value cell images (vm
-    # attribute) which openpyxl strips on read/write.  Re-insert them so
-    # the header area (rows 1–5) logos appear in the generated output.
+    # ── Restore Summary header vm= images ─────────────────────────────────
+    # Summary is unaffected by Data column deletion — order safe here.
     if vm_cell_images:
         _restore_header_images(ws_summary, vm_cell_images, sheet_idx=1)
-        _restore_header_images(ws_data,    vm_cell_images, sheet_idx=2)
 
     return wb
 
@@ -554,16 +574,36 @@ def _fix_merged_cells_after_col_deletion(ws, deleted_col_1based):
 
 
 def _fix_image_anchors_after_col_deletion(ws, deleted_col_0based):
-    """Shift image anchor cols >= deleted_col_0based left by 1 (0-based cols)."""
+    """
+    Shift image anchor cols >= deleted_col_0based left by 1 (0-based cols).
+
+    Handles two anchor types that openpyxl uses:
+      • String anchor (e.g. 'K1') — created by ws.add_image(img, 'K1')
+      • AnchorMarker object      — created when loading an existing workbook
+    String anchors do NOT have a _from attribute so the old isinstance check
+    silently skipped them, leaving images at the wrong column after deletion.
+    """
+    from openpyxl.utils import get_column_letter, column_index_from_string
+    import re as _re_col
+
     for img in ws._images:
         try:
             anchor = img.anchor
-            if hasattr(anchor, '_from'):
+            if isinstance(anchor, str):
+                # Simple string anchor like 'K1' — parse col letter, shift if needed
+                m = _re_col.match(r'([A-Z]+)(\d+)', anchor)
+                if m:
+                    col_1based = column_index_from_string(m.group(1))
+                    col_0based  = col_1based - 1
+                    if col_0based >= deleted_col_0based:
+                        new_col_letter = get_column_letter(col_1based - 1)
+                        img.anchor = f'{new_col_letter}{m.group(2)}'
+            elif hasattr(anchor, '_from'):
                 if anchor._from.col >= deleted_col_0based:
                     anchor._from.col -= 1
-            if hasattr(anchor, 'to') and anchor.to is not None:
-                if anchor.to.col >= deleted_col_0based:
-                    anchor.to.col -= 1
+                if hasattr(anchor, 'to') and anchor.to is not None:
+                    if anchor.to.col >= deleted_col_0based:
+                        anchor.to.col -= 1
         except Exception:
             pass
 
@@ -771,17 +811,21 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country, vm_cell_imag
     n_template_cols = max(col_map.values()) if col_map else 12
 
     # ── Clear old template footer zone ────────────────────────────────────
-    # Must happen BEFORE writing data rows so that data written to rows
-    # 24+ is not subsequently wiped. Merges cleared first to avoid the
-    # AttributeError raised when assigning to a merged-cell slave.
-    ws_data.merged_cells.ranges.clear()
+    # Must happen BEFORE writing data rows so data written to rows 24+
+    # is not subsequently wiped.
+    # IMPORTANT: only remove footer-zone merges (rows > TEMPLATE_LAST_DATA_ROW).
+    # Header merges (e.g. A1:B5, K1:L5) must be preserved.
+    _footer_start = TEMPLATE_LAST_DATA_ROW + 1
+    for _m in [str(m) for m in ws_data.merged_cells.ranges
+               if m.min_row >= _footer_start]:
+        ws_data.merged_cells.remove(_m)
 
     for r in range(TEMPLATE_LAST_DATA_ROW + 1, TEMPLATE_LAST_DATA_ROW + 30):
         for c in range(1, n_template_cols + 1):
             try:
                 ws_data.cell(r, c).value = None
             except AttributeError:
-                pass  # residual merged slave — safe after range.clear()
+                pass  # residual merged slave
 
     # ── Write machine data rows ────────────────────────────────────────────
     # Dates as datetime objects (preserves template formatting).
@@ -843,6 +887,14 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country, vm_cell_imag
                 if cell.hyperlink.ref != correct_ref:
                     cell.hyperlink.ref = correct_ref
 
+    # ── Restore Data header vm= images BEFORE column deletion ─────────────
+    # CRITICAL ORDER: header images must be inserted into ws_data BEFORE any
+    # column deletion.  openpyxl's _fix_image_anchors_after_col_deletion will
+    # then shift the image anchors correctly (e.g. K1→J1 after deleting col H).
+    # If we added images AFTER deletion, we'd place them at the wrong column.
+    if vm_cell_images:
+        _restore_header_images(ws_data, vm_cell_images, sheet_idx=2)
+
     # ---- Column deletion ----
     cols_to_delete = []
     for header in ['Computer Domains', 'Client Email Addresses']:
@@ -853,23 +905,20 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country, vm_cell_imag
     for col_idx in sorted(cols_to_delete, reverse=True):
         ws_data.delete_cols(col_idx)
         # Fix image anchor columns (openpyxl doesn't update them after delete_cols)
+        # This also shifts any header images we just added above.
         _fix_image_anchors_after_col_deletion(ws_data, col_idx - 1)  # convert to 0-based
         # Fix merged cell col ranges (openpyxl doesn't update them after delete_cols)
         _fix_merged_cells_after_col_deletion(ws_data, col_idx)
 
     # ── Restore CS Summary A37 footer logo ────────────────────────────────
-    # The CS template has a vm= image at A37 in the Summary sheet.
-    # It shifts to A36 if the Computer Domain row was deleted (row 12 deleted
-    # → everything below shifts up by 1, so A37 → A36).
-    # The original cell held '#VALUE!' as a cached error — clear it first so
-    # the cell doesn't show an error behind the floating image.
     if _cs_sum_footer_img:
         from openpyxl.drawing.image import Image as _XLImgCS
         _sf_bytes, _sf_w, _sf_h = _cs_sum_footer_img
         _sf_row = 36 if delete_domain_row else 37
-        # Clear any cached #VALUE! from the template cell
         try:
-            ws_summary.cell(_sf_row, 1).value = None
+            _sf_cell = ws_summary.cell(_sf_row, 1)
+            _sf_cell.value     = None
+            _sf_cell.data_type = 'n'
         except Exception:
             pass
         _sf_img         = _XLImgCS(io.BytesIO(_sf_bytes))
@@ -877,12 +926,9 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country, vm_cell_imag
         _sf_img.height  = _sf_h
         ws_summary.add_image(_sf_img, f'A{_sf_row}')
 
-    # ── Restore header vm= images as floating drawings ─────────────────────
-    # The CS templates store all header logos as rich-value cell images
-    # (vm attribute) which openpyxl strips on read/write.  Re-insert them.
+    # ── Restore Summary header vm= images (Summary not affected by Data col deletion) ─
     if vm_cell_images:
         _restore_header_images(ws_summary, vm_cell_images, sheet_idx=1)
-        _restore_header_images(ws_data,    vm_cell_images, sheet_idx=2)
 
     return wb
 
