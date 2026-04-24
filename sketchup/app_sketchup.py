@@ -6,7 +6,6 @@ This module exposes a single function:  render()
 Called by the root app.py inside the SketchUp tab.
 """
 
-import base64
 import io
 import json
 import openpyxl
@@ -145,24 +144,20 @@ def _sublabel(text: str, tip: str = '') -> None:
 # USER MANUAL BUTTON
 # ---------------------------------------------------------------------------
 
-_MANUAL_PATH = Path(__file__).parent.parent / 'docs' / 'user_manual.pdf'
-
-
 def _manual_button() -> None:
     """
-    Render a small HTML link that opens the PDF user manual in a new tab.
-    The PDF is read from the repo at docs/user_manual.pdf, encoded as a
-    base64 data URI, and opened via an <a target="_blank"> tag — the only
-    reliable way to open a file in a new tab from Streamlit.
+    Render a '📖 User Manual' link that opens the PDF in a new browser tab.
+
+    Approach: Streamlit static file serving.
+    - The PDF lives at static/user_manual.pdf (repo root/static/).
+    - Streamlit serves files in that folder at /static/<filename> when
+      enableStaticServing = true in .streamlit/config.toml.
+    - A plain <a href="/static/user_manual.pdf" target="_blank"> opens it
+      natively in the browser without any data-URI encoding — which modern
+      browsers (Chrome 60+, Edge) block for PDF navigation.
     """
-    if not _MANUAL_PATH.exists():
-        return
-    b64 = base64.b64encode(_MANUAL_PATH.read_bytes()).decode()
-    href = (
-        f'data:application/pdf;base64,{b64}'
-    )
     st.markdown(
-        f'''<a href="{href}" target="_blank" style="
+        '''<a href="/static/user_manual.pdf" target="_blank" style="
             display:inline-flex; align-items:center; gap:0.4rem;
             font-family:'DM Mono', monospace; font-size:0.75rem;
             color:var(--text-muted); text-decoration:none;
@@ -186,6 +181,18 @@ def _manual_button() -> None:
 
 def render():
     """Render the full SketchUp Evidence Report Generator UI inside its tab."""
+
+    # ── Handle pending clear request ────────────────────────────────────────
+    # Must run BEFORE any widget is instantiated to avoid the Streamlit
+    # "cannot modify after widget is instantiated" exception.
+    if st.session_state.pop('sk_clear_pending', False):
+        for k in [k for k in list(st.session_state.keys())
+                  if k.startswith('sk_')]:
+            del st.session_state[k]
+        # Set list/dropdown defaults so widgets render empty on this run
+        st.session_state['sk_case_ids']      = ['']
+        st.session_state['sk_extra_domains'] = []
+        st.session_state['sk_country']       = ''
 
     # Inject tooltip CSS once per render
     st.markdown(_TOOLTIP_CSS, unsafe_allow_html=True)
@@ -428,32 +435,13 @@ def render():
 
     def _clear_sk_state():
         """
-        Full soft reset: explicitly set static widget keys back to their
-        default values so Streamlit renders them empty on the next run.
-        File uploader keys must be deleted (no API to clear them programmatically).
-        Dynamic per-row keys (sk_cid_N, sk_dom_N) must also be deleted since
-        they are recreated from the list length on each render.
+        Request a full reset by setting a flag, then rerun.
+        The actual deletion happens at the TOP of render() on the next run,
+        BEFORE any widgets are instantiated — Streamlit forbids modifying
+        a widget's session state key after it has already been rendered in
+        the same script execution.
         """
-        # ── Static input widgets: set to default ────────────────────────────
-        st.session_state['sk_entity_name']    = ''
-        st.session_state['sk_primary_domain'] = ''
-        st.session_state['sk_case_ids']       = ['']   # single empty row
-        st.session_state['sk_extra_domains']  = []     # no extra domains
-        st.session_state['sk_country']        = ''     # first (blank) option
-
-        # ── File uploaders: delete key → Streamlit re-creates them empty ────
-        for key in ('sk_machine_files', 'sk_event_files', 'sk_template_file'):
-            st.session_state.pop(key, None)
-
-        # ── Dynamic per-row widget keys ──────────────────────────────────────
-        for k in [k for k in st.session_state
-                  if k.startswith('sk_cid_') or k.startswith('sk_dom_')]:
-            del st.session_state[k]
-
-        # ── Results ──────────────────────────────────────────────────────────
-        for key in ('sk_processed', 'sk_result_rows', 'sk_result_globals',
-                    'sk_result_type', 'sk_result_filename', 'sk_result_buffer'):
-            st.session_state.pop(key, None)
+        st.session_state['sk_clear_pending'] = True
 
     gen_col, clear_col, _ = st.columns([2, 1, 2])
     with gen_col:
