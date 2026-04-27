@@ -649,7 +649,8 @@ def _copy_row_style(ws, src_row, dst_row, max_col):
 
 
 def _write_cs_footer(ws_data, last_data_row, img_bytes=None,
-                     img_width=None, img_height=None):
+                     img_width=None, img_height=None,
+                     img_row_height=None):
     """
     Write the CS Data sheet footer at a position computed from last_data_row.
     Called for every run so the footer is always correctly placed.
@@ -659,6 +660,8 @@ def _write_cs_footer(ws_data, last_data_row, img_bytes=None,
       • Footer image at last_data_row + CS_IMAGE_GAP if img_bytes provided.
         The CS template stores this as a rich-value cell image (vm attribute)
         which openpyxl strips; we re-insert it as a standard floating drawing.
+      • Row height for the image row is set to img_row_height (read from the
+        template's original row 31 so each CS variant is pixel-precise).
       • Note text + A:J merge at last_data_row + CS_NOTE_GAP
     """
     from openpyxl.styles import Font, Alignment
@@ -683,6 +686,10 @@ def _write_cs_footer(ws_data, last_data_row, img_bytes=None,
         _img.width  = img_width
         _img.height = img_height
         _excel_img_row = image_row + 1  # convert 0-based to 1-based for add_image
+        # Set row height to match the template's original A31 row exactly.
+        # Each CS variant has a different height: ARG=15.75, PAR=18.0, Q1=20.4pt.
+        if img_row_height:
+            ws_data.row_dimensions[_excel_img_row].height = img_row_height
         ws_data.add_image(_img, f'A{_excel_img_row}')
 
     # ── Note text + merge A:J ─────────────────────────────────────────────
@@ -710,6 +717,23 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country, vm_cell_imag
     _cs_dat_footer_img = (vm_cell_images.get((2, 'A31'))
                           or vm_cell_images.get((2, 'A30'))
                           or None)
+
+    # ── Read template row heights BEFORE any mutation ─────────────────────
+    # Data row 31 hosts the footer image (A31, vm=5).  Each CS variant has a
+    # different height: ARG=15.75pt, PAR=18.0pt, Q1=20.4pt.  Read from the
+    # loaded workbook now (openpyxl preserves all customHeight entries on load)
+    # so the result file matches the template exactly regardless of machine count.
+    _tmpl_data_img_row_ht  = None
+    _tmpl_sum_img_row_ht   = None
+    try:
+        _rd31 = ws_data.row_dimensions.get(31)
+        if _rd31 and _rd31.height:
+            _tmpl_data_img_row_ht = _rd31.height
+        _rs37 = ws_summary.row_dimensions.get(37)
+        if _rs37 and _rs37.height:
+            _tmpl_sum_img_row_ht = _rs37.height
+    except Exception:
+        pass
 
     # ---- Determine if Computer Domain row should be deleted ----
     # Template row 12 = 'Computer Domain'.
@@ -897,7 +921,8 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country, vm_cell_imag
     _write_cs_footer(ws_data, last_data_row,
                      img_bytes=_dat_img_bytes,
                      img_width=_dat_img_w,
-                     img_height=_dat_img_h)
+                     img_height=_dat_img_h,
+                     img_row_height=_tmpl_data_img_row_ht)
 
     data_end_row = last_data_row
 
@@ -946,6 +971,10 @@ def fill_cs(wb, rows, globals_data, case_ids, entity_name, country, vm_cell_imag
         _sf_img         = _XLImgCS(io.BytesIO(_sf_bytes))
         _sf_img.width   = _sf_w
         _sf_img.height  = _sf_h
+        # Apply the template's row height for the image row (shifts to A36 if
+        # domain row was deleted, so the row number changes but the height stays).
+        if _tmpl_sum_img_row_ht:
+            ws_summary.row_dimensions[_sf_row].height = _tmpl_sum_img_row_ht
         ws_summary.add_image(_sf_img, f'A{_sf_row}')
 
     # ── Restore Summary header vm= images (Summary not affected by Data col deletion) ─
