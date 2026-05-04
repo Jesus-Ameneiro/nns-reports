@@ -170,33 +170,59 @@ def _sublabel(text: str, tip: str = '') -> None:
 # ---------------------------------------------------------------------------
 
 @st.cache_data
-def _manual_bytes() -> bytes:
-    """Read the PDF once per session and cache the bytes."""
+def _manual_b64() -> str:
+    """Read the PDF once per session and return base64."""
     manual_path = Path(__file__).parent.parent / 'docs' / 'user_manual.pdf'
     if not manual_path.exists():
-        return b''
-    return manual_path.read_bytes()
+        return ''
+    import base64
+    return base64.b64encode(manual_path.read_bytes()).decode()
 
 
 def _manual_button() -> None:
     """
     Render the User Manual button.
-    st.download_button serves the PDF with the correct MIME type so browsers
-    with a built-in PDF viewer open it inline; others save it.
-    This avoids the about:blank issue caused by browsers blocking data: URI
-    navigation to new tabs (Chrome/Firefox security policy since ~2019).
+    Uses a JavaScript Blob URL so the PDF opens in a new browser tab.
+    - data: URIs in href are blocked by Chrome/Firefox (shows about:blank).
+    - blob: URLs are created client-side and are allowed to open in new tabs.
+    - st.components.v1.html renders an iframe; target="_blank" from inside
+      an iframe opens a genuine new browser tab.
     """
-    pdf = _manual_bytes()
-    if not pdf:
+    import streamlit.components.v1 as components
+    b64 = _manual_b64()
+    if not b64:
         return
-    st.download_button(
-        label='📖 User Manual',
-        data=pdf,
-        file_name='NNS_Evidence_Report_Generator_User_Manual.pdf',
-        mime='application/pdf',
-        help='Open the User Manual PDF',
-        key='sk_manual_btn',
-    )
+    html = f"""
+<style>
+  body {{ margin:0; padding:0; background:transparent; }}
+  #manualBtn {{
+    display:inline-flex; align-items:center; gap:0.4rem;
+    font-family:'DM Mono', 'Courier New', monospace; font-size:0.75rem;
+    color:#9a9a9a; text-decoration:none;
+    padding:0.3rem 0.7rem;
+    border:1px solid #2a2a2a;
+    border-radius:6px;
+    background:#1a1a1a;
+    cursor:pointer;
+    transition:border-color 0.15s, color 0.15s;
+    white-space:nowrap;
+  }}
+  #manualBtn:hover {{ border-color:#f97316; color:#f97316; }}
+</style>
+<a id="manualBtn" href="#" target="_blank">📖 User Manual</a>
+<script>
+  (function() {{
+    var b64 = "{b64}";
+    var bytes = atob(b64);
+    var buf = new Uint8Array(bytes.length);
+    for (var i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+    var blob = new Blob([buf], {{type: 'application/pdf'}});
+    var url  = URL.createObjectURL(blob);
+    document.getElementById('manualBtn').href = url;
+  }})();
+</script>
+"""
+    components.html(html, height=38)
 
 
 # ---------------------------------------------------------------------------
