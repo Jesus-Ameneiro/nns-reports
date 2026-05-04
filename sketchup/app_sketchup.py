@@ -6,7 +6,6 @@ This module exposes a single function:  render()
 Called by the root app.py inside the SketchUp tab.
 """
 
-import base64
 import io
 import json
 import openpyxl
@@ -171,42 +170,32 @@ def _sublabel(text: str, tip: str = '') -> None:
 # ---------------------------------------------------------------------------
 
 @st.cache_data
-def _manual_b64() -> str:
-    """
-    Read the PDF and return a base64-encoded data URI.
-    Cached so the file is only read once per session.
-    Using a data URI instead of /static/... avoids Streamlit Community
-    Cloud's /app/static/ path ambiguity and works without any
-    static file serving config.
-    """
+def _manual_bytes() -> bytes:
+    """Read the PDF once per session and cache the bytes."""
     manual_path = Path(__file__).parent.parent / 'docs' / 'user_manual.pdf'
     if not manual_path.exists():
-        return ''
-    data = manual_path.read_bytes()
-    return base64.b64encode(data).decode()
+        return b''
+    return manual_path.read_bytes()
 
 
 def _manual_button() -> None:
-    b64 = _manual_b64()
-    if not b64:
+    """
+    Render the User Manual button.
+    st.download_button serves the PDF with the correct MIME type so browsers
+    with a built-in PDF viewer open it inline; others save it.
+    This avoids the about:blank issue caused by browsers blocking data: URI
+    navigation to new tabs (Chrome/Firefox security policy since ~2019).
+    """
+    pdf = _manual_bytes()
+    if not pdf:
         return
-    data_uri = f'data:application/pdf;base64,{b64}'
-    st.markdown(
-        f'''<a href="{data_uri}" target="_blank" style="
-            display:inline-flex; align-items:center; gap:0.4rem;
-            font-family:'DM Mono', monospace; font-size:0.75rem;
-            color:var(--text-muted); text-decoration:none;
-            padding:0.3rem 0.7rem;
-            border:1px solid var(--border);
-            border-radius:6px;
-            background:var(--surface2);
-            transition:all 0.15s;
-        "
-        onmouseover="this.style.borderColor='#f97316';this.style.color='#f97316';"
-        onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)';">
-            📖 User Manual
-        </a>''',
-        unsafe_allow_html=True,
+    st.download_button(
+        label='📖 User Manual',
+        data=pdf,
+        file_name='NNS_Evidence_Report_Generator_User_Manual.pdf',
+        mime='application/pdf',
+        help='Open the User Manual PDF',
+        key='sk_manual_btn',
     )
 
 
