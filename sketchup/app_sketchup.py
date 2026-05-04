@@ -6,6 +6,7 @@ This module exposes a single function:  render()
 Called by the root app.py inside the SketchUp tab.
 """
 
+import base64
 import io
 import json
 import openpyxl
@@ -169,9 +170,29 @@ def _sublabel(text: str, tip: str = '') -> None:
 # USER MANUAL BUTTON
 # ---------------------------------------------------------------------------
 
+@st.cache_data
+def _manual_b64() -> str:
+    """
+    Read the PDF and return a base64-encoded data URI.
+    Cached so the file is only read once per session.
+    Using a data URI instead of /static/... avoids Streamlit Community
+    Cloud's /app/static/ path ambiguity and works without any
+    static file serving config.
+    """
+    manual_path = Path(__file__).parent.parent / 'docs' / 'user_manual.pdf'
+    if not manual_path.exists():
+        return ''
+    data = manual_path.read_bytes()
+    return base64.b64encode(data).decode()
+
+
 def _manual_button() -> None:
+    b64 = _manual_b64()
+    if not b64:
+        return
+    data_uri = f'data:application/pdf;base64,{b64}'
     st.markdown(
-        '''<a href="/static/user_manual.pdf" target="_blank" style="
+        f'''<a href="{data_uri}" target="_blank" style="
             display:inline-flex; align-items:center; gap:0.4rem;
             font-family:'DM Mono', monospace; font-size:0.75rem;
             color:var(--text-muted); text-decoration:none;
